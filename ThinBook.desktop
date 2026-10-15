@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=薄书 ThinBook
+Comment=Local reading agent
+Exec=sh -c "cd \"$(dirname \"$(readlink -f \"%k\")\")\" && sh ./start.sh"
+Icon=accessories-dictionary
+Terminal=true
+Categories=Education;

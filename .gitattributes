@@ -1,0 +1,5 @@
+.local export-ignore
+.runtime export-ignore
+output export-ignore
+.env export-ignore
+.env.* export-ignore

@@ -1,0 +1,9 @@
+node_modules/
+.runtime/
+output/
+.playwright-cli/
+*.log
+.env
+.env.*
+!.env.example
+.local/

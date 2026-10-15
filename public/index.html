@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#161916"><title>薄书 · 把好书读薄</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="薄书首页"><img class="brand-logo" src="/logo.svg" alt=""><span>薄书<small>THINBOOK</small></span></a>
+    <div class="side-label">我的阅读空间</div>
+    <nav aria-label="主导航">
+      <button class="nav-item active" data-view="discover"><span>◈</span> 发现好书</button>
+      <button class="nav-item" data-view="classics"><span>▤</span> 经典书库 <i id="catalog-count"></i></button>
+      <button class="nav-item" data-view="saved"><span>♧</span> 我的书架 <i id="saved-count">0</i></button>
+      <button class="nav-item" data-view="history"><span>◷</span> 最近阅读</button>
+    </nav>
+    <div class="side-quote"><span>“</span><p>书籍是人类进步的阶梯。</p><small>— 高尔基</small></div>
+    <div class="side-bottom"><button id="settings-open" class="nav-item"><span>⚙</span> 模型设置 <b id="key-dot"></b></button><div class="local-status"><span></span> 本地运行 <small>v1.1</small></div></div>
+  </aside>
+  <main id="main">
+    <header class="topbar"><span id="breadcrumb">发现 / 为你精选</span><div class="top-actions"><button id="import-open" class="text-button">＋ 自选书籍</button><button class="avatar" id="settings-avatar" aria-label="打开模型设置">读</button></div></header>
+    <section class="hero" id="hero">
+      <div class="hero-copy"><div class="eyebrow"><span></span> 少一点厚度，多一点深度</div><h1>把书读薄，<br>把世界读<span>厚。</span></h1><p>留住一本书的精华，也留住它的灵魂。</p><a class="hero-link" href="#library">开启一段阅读 <span>↗</span></a><p class="original-note">更推荐阅读原著，那里有更丰富的细节、语言与体验。</p></div>
+      <div class="hero-art" aria-hidden="true"><div class="orb"></div><div class="book-shadow"></div><div class="art-book book-back"><span>THE ART<br>OF READING</span></div><div class="art-book book-front"><div class="art-line"></div><small>A WORLD WITHIN</small><strong>阅<br>读<br>之<br>间</strong><span>让思想，自由生长</span><div class="art-arch"></div></div><div class="art-caption">A LITTLE BOOK.<br>A BIGGER WORLD.</div><span class="star">✳</span></div>
+    </section>
+    <div id="lan-address" class="lan-address" hidden></div>
+    <section id="continue-section" class="continue-section" hidden><button id="continue-button"><span>◷ 继续上次的阅读</span><strong id="continue-title"></strong><span>继续阅读 ↗</span></button></section>
+    <section id="library" class="library">
+      <div class="section-heading"><div><div class="eyebrow muted" id="shelf-eyebrow">YOUR NEXT GREAT READ</div><h2 id="shelf-title">值得翻开的世界<span>精选好书，慢慢读。</span></h2></div><span class="book-total" id="book-total"></span></div>
+      <form class="search" id="search-form"><span aria-hidden="true">⌕</span><input id="search-input" placeholder="搜索书名、作者，找到下一本好书" aria-label="搜索书名或作者" autocomplete="off"><kbd>/</kbd><button type="submit">搜索</button></form>
+      <div class="filter-line"><div id="categories" class="categories" role="group" aria-label="书籍分类"></div><button id="online-search" class="online-button">联网找书 ↗</button></div>
+      <div id="search-status" class="search-status" role="status" aria-live="polite"></div>
+      <div id="book-grid" class="book-grid"></div>
+      <div id="empty-state" class="empty-state" hidden><span>▤</span><h3>这里还有空白的一页</h3><p id="empty-message">试试另一个书名，或添加你想读的书。</p><button id="empty-add" class="primary">＋ 自选书籍</button></div>
+      <button id="load-more" class="load-more" hidden>再翻一页 <span>↓</span></button>
+    </section>
+    <footer><span class="footer-brand">薄书 <small>THINBOOK</small></span><span>每一本好书，都值得被读完。</span><span>POWERED BY DEEPSEEK HARNESS <span class="green-dot">●</span></span></footer>
+  </main>
+  <dialog id="settings-dialog"><form id="settings-form" class="dialog-content"><button type="button" class="close" data-close aria-label="关闭">×</button><div class="eyebrow">MAKE IT YOURS</div><h2>连接你的 DeepSeek</h2><label>API Key<input id="api-key" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false" maxlength="512"></label><label>提炼模型<input id="model" value="deepseek-flash" required maxlength="100" spellcheck="false"></label><p class="form-note" id="key-note">Key 保存在项目本地私有配置中，网页不会读回密钥。</p><div class="dialog-actions"><button type="button" class="secondary" id="test-key">测试连接</button><button class="primary" type="submit">保存设置 ↗</button></div><button type="button" class="text-button" id="clear-key">移除已保存的 Key</button><p id="settings-status" class="form-status" role="status"></p></form></dialog>
+  <dialog id="book-dialog"><div class="dialog-content book-detail"><button type="button" class="close" data-close aria-label="关闭">×</button><div id="detail-cover"></div><div class="detail-copy"><div class="eyebrow" id="detail-category"></div><h2 id="detail-title"></h2><p id="detail-author"></p><p id="detail-description" class="detail-description"></p><div class="detail-divider"></div><label>为这本书，留一点时间</label><div class="length-options" id="length-options"><button data-minutes="5">5 分钟</button><button data-minutes="10" class="selected">10 分钟</button><button data-minutes="20">20 分钟</button></div><details class="source-input"><summary>我有原文</summary><label class="upload-label">导入 TXT / Markdown<input id="source-file" type="file" accept=".txt,.md,text/plain,text/markdown"></label><textarea id="source-text" placeholder="粘贴你拥有的原文（最多 60 万字）" maxlength="600000"></textarea><label class="check-label"><input id="source-complete" type="checkbox"> 这是完整原文</label></details><p class="form-note">自动保存至项目本地，同条件再次阅读优先使用缓存。</p><div class="dialog-actions"><button id="save-book" class="secondary">＋ 加入书架</button><button id="read-book" class="primary">把这本书读薄 ↗</button></div></div></div></dialog>
+  <dialog id="custom-dialog"><form id="custom-form" class="dialog-content"><button type="button" class="close" data-close aria-label="关闭">×</button><div class="eyebrow">ONE MORE WORLD</div><h2>你想读哪一本？</h2><label>书名<input id="custom-title" required maxlength="200" placeholder="一本一直想读的书"></label><label>作者<input id="custom-author" required maxlength="200" placeholder="帮助我们找到正确的版本"></label><button type="submit" class="primary full">打开这本书 ↗</button></form></dialog>
+  <section id="reader" class="reader" hidden><div class="reading-progress" id="reading-progress"></div><header class="reader-toolbar"><button id="reader-back" class="text-button">← 返回书库</button><span class="reader-logo">薄书 / 阅读之间</span><div class="reader-actions"><button id="font-down" aria-label="缩小字号">A−</button><button id="font-up" aria-label="放大字号">A＋</button><button id="export-reading" aria-label="导出 Markdown">↓ 导出</button></div></header><div class="reader-container"><div id="reader-loading" class="reader-loading" hidden><div class="loading-book"><i></i><i></i><i></i></div><h2>让一本好书，慢慢变薄。</h2><p id="loading-stage">正在连接 DeepSeek Harness…</p><div id="activity" class="activity"></div><button id="cancel-reading" class="secondary">取消</button></div><article id="reader-article" hidden><div class="eyebrow" id="reader-basis"></div><h1 id="reader-title"></h1><div class="reading-meta" id="reader-meta"></div><div id="reader-body" class="reader-body"></div><div class="reading-end">✳</div><div class="coverage-box"><span>关于这次提炼</span><p id="reader-coverage"></p></div><details id="reader-sources"><summary>参考来源</summary><ul id="sources-list"></ul></details><button class="secondary" id="finish-reading">读完了，回到书库 ↗</button></article><div id="reader-error" class="reader-error" hidden><span>暂时没能翻开这本书</span><p id="error-message"></p><button id="retry-reading" class="primary">重新尝试</button></div></div></section>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script type="module" src="/app.js"></script>
+</body></html>
