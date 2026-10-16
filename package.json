@@ -18,7 +18,9 @@
   "main": "./plugin/index.mjs",
   "exports": {
     ".": "./plugin/index.mjs",
-    "./cordis.patch.yml": "./cordis.patch.yml"
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "plugin/",
@@ -44,7 +46,9 @@
     "docs/assets/",
     "docs/catalog-series.md",
     "configure.bat",
-    "scripts/dsh-host.mjs"
+    "scripts/dsh-host.mjs",
+    "locale/",
+    "scripts/register-plugin.mjs"
   ],
   "dsh": {
     "bundle": {
@@ -62,5 +66,6 @@
   "devDependencies": {
     "@deepseek-ai/dsh": "0.2.0-rc.2",
     "@deepseek-ai/dsh-agent-preset-registry": "0.2.0-rc.2"
-  }
+  },
+  "icon": "./public/favicon.svg"
 }

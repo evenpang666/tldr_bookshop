@@ -27,55 +27,20 @@ test('latest DSH is reused without running an installer', async () => {
   assert.equal(await ensureDsh({ locate: async () => existing, versionOf: async () => latestVersion, install: async () => assert.fail('unexpected install'), log() {} }), existing);
 });
 
-test('an already managed latest DSH is reused when system DSH is older', async t => {
-  const directory = await fixture(t);
-  await fakeDsh(directory);
-  const runtime = await ensureDsh({ directory, locate: async () => ({ command: process.execPath, args: ['-e', "console.log('0.1.0')"] }), install: async () => assert.fail('unexpected install'), log() {} });
-  assert.equal(await readDshVersion(runtime), latestVersion);
-  assert.equal(runtime.args[0], join(directory, 'node_modules/@deepseek-ai/dsh/lib/bin.js'));
+test('an installed DSH is reused without querying npm, even when a different managed version exists',async t=>{
+  const directory=await fixture(t);await fakeDsh(directory,'9.0.0');
+  const existing=await fakeDsh(join(directory,'existing'),'0.2.0-rc.2');
+  const result=await ensureRuntime({directory,locate:async()=>existing,latest:async()=>assert.fail('no npm query'),install:async()=>assert.fail('no install'),log(){}});
+  assert.equal(result,existing);
 });
-
-for (const detected of [null, '0.1.0', 'broken']) {
-  test(`missing, older or broken DSH (${detected}) installs, verifies and reuses a managed runtime`, async t => {
-    const base = await fixture(t), directory = join(base, latestVersion), messages = [];
-    const env = { ...process.env, DSH_HOME: base, DEEPSEEK_API_KEY: 'test-key-must-not-be-rewritten' };
-    await writeFile(join(base, '.credentials.yaml'), 'keep existing credentials');
-    const existing = detected === null ? null : detected === 'broken' ? { command: join(base, 'nonexistent-dsh'), args: [] } : await fakeDsh(join(base, 'system'), detected);
-    let installs = 0;
-    const install = async (target, options) => installDsh(target, {
-      ...options,
-      locateNpm: async passed => { assert.equal(passed, env); return { command: 'test-npm', args: ['npm-cli.js'] }; },
-      run: async (command, args, options) => {
-        installs++;
-        assert.equal(command, 'test-npm'); assert.equal(args[0], 'npm-cli.js');
-        assert.ok(args.includes(`@deepseek-ai/dsh@${latestVersion}`)); assert.ok(args.includes('--no-save')); assert.ok(args.includes('--no-package-lock'));
-        assert.equal(options.env, env);
-        const staging = args[args.indexOf('--prefix') + 1];
-        assert.notEqual(staging, target); assert.equal(options.cwd, staging);
-        await fakeDsh(staging);
-      },
-    });
-    const options = { env, directory, locate: async () => existing, install, log: message => messages.push(message) };
-    const runtime = await ensureDsh(options);
-    assert.equal(installs, 1); assert.equal(await readDshVersion(runtime), latestVersion);
-    assert.ok(messages.some(message => message.includes('安装或升级完成')));
-    assert.deepEqual(await ensureDsh(options), runtime); assert.equal(installs, 1);
-    assert.equal(await readFile(join(base, '.credentials.yaml'), 'utf8'), 'keep existing credentials');
-    assert.ok((await readdir(base)).every(name => !name.startsWith('.install-')));
-    if (detected === '0.1.0') assert.equal(await readDshVersion(existing), detected);
-  });
-}
-
-test('failed installation keeps the old managed runtime and removes temporary downloads', async t => {
-  const base = await fixture(t), directory = join(base, latestVersion);
-  const old = await fakeDsh(directory, '0.1.0');
-  const options = {
-    locateNpm: async () => ({ command: 'test-npm', args: [] }),
-    run: async () => { throw new Error('offline'); },
-  };
-  await assert.rejects(ensureDsh({ directory, locate: async () => null, install: target => installDsh(target, options), log() {} }), /自动安装或升级失败.*offline.*重新启动/);
-  assert.equal(await readDshVersion(old), '0.1.0');
-  assert.deepEqual(await readdir(base), [latestVersion]);
+test('an existing managed DSH is reused when PATH DSH is missing',async t=>{
+  const directory=await fixture(t);await fakeDsh(directory);
+  const runtime=await ensureRuntime({directory,locate:async()=>null,latest:async()=>assert.fail('no npm query'),install:async()=>assert.fail('no install'),log(){}});
+  assert.equal(await readDshVersion(runtime),latestVersion);
+});
+test('missing DSH reports installation guidance instead of querying or downloading',async t=>{
+  const directory=await fixture(t);
+  await assert.rejects(ensureRuntime({directory,locate:async()=>null,versionOf:async()=>null,latest:async()=>assert.fail('no query'),install:async()=>assert.fail('no install'),log(){}}),/不会自动安装或升级/);
 });
 
 test('wrong downloaded version is rejected before replacing an old runtime', async t => {
@@ -112,12 +77,8 @@ test('latest version is queried from npm latest tag without a compatibility rang
   assert.equal(version, '9.0.0-rc.1');
 });
 
-test('offline update check reuses an installed runtime and explains the fallback', async () => {
-  const existing = { command: 'existing-dsh', args: [] }, messages = [];
-  const runtime = await ensureRuntime({ locate: async () => existing, versionOf: async runtime => runtime === existing ? '1.0.0' : null, latest: async () => { throw new Error('offline'); }, install: async () => assert.fail('unexpected install'), log: message => messages.push(message) });
-  assert.equal(runtime, existing); assert.ok(messages.some(message => message.includes('无法检查 DSH 更新')));
-});
-
-test('a fresh install reports network failure when the latest version cannot be queried', async () => {
-  await assert.rejects(ensureRuntime({ locate: async () => null, versionOf: async () => null, latest: async () => { throw new Error('offline'); }, log() {} }), /无法查询 DSH 最新版本/);
+test('startup does not query update services when an installed runtime is available',async()=>{
+  const existing={command:'existing-dsh',args:[]};
+  const runtime=await ensureRuntime({locate:async()=>existing,versionOf:async candidate=>candidate===existing?'0.2.0-rc.2':null,latest:async()=>assert.fail('no query'),install:async()=>assert.fail('no install'),log(){}});
+  assert.equal(runtime,existing);
 });

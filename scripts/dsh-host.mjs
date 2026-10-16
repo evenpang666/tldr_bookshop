@@ -68,7 +68,12 @@ export async function registeredThinbook(home, health) {
     const record = JSON.parse(await readFile(endpointPath(home), 'utf8'));
     if (record.profile !== 'web' || !alive(record.pid) || !Number.isInteger(record.port) || record.port < 1 || record.port > 65535) return null;
     const response = await health(record.port);
-    return response?.app === 'thinbook' && response.runtime === 'dsh' ? record : null;
+    if (response?.app !== 'thinbook' || response.runtime !== 'dsh' || response.instanceId !== record.instanceId || !['', '/thinbook'].includes(record.basePath)) return null;
+    if (record.url) {
+      const url = new URL(record.url);
+      if (url.origin !== `http://127.0.0.1:${record.port}` || url.pathname !== record.basePath + '/' || url.username || url.password || (record.basePath === '/thinbook' ? url.searchParams.getAll('token').length !== 1 : url.search !== '')) return null;
+    }
+    return record;
   } catch { return null; }
 }
 

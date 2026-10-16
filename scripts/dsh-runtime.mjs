@@ -39,6 +39,17 @@ export async function findDsh(env = process.env) {
   return null;
 }
 
+export async function findPnpm(env = process.env) {
+  const names = process.platform === 'win32' ? ['pnpm.cmd', 'pnpm.exe', 'pnpm'] : ['pnpm'];
+  for (const directory of (env.PATH || env.Path || '').split(delimiter).filter(Boolean)) {
+    for (const name of names) {
+      const runtime = await nodeCommand(join(directory, name), ['node_modules/pnpm/bin/pnpm.cjs', 'node_modules/pnpm/bin/pnpm.mjs']);
+      if (runtime) return runtime;
+    }
+  }
+  return null;
+}
+
 export async function findNpm(env = process.env) {
   const names = process.platform === 'win32' ? ['npm.cmd', 'npm'] : ['npm'];
   const candidates = [
@@ -114,30 +125,14 @@ export async function installDsh(directory, { version = 'latest', env = process.
   }
 }
 
-export async function ensureDsh({ env = process.env, directory = join(env.DSH_HOME || join(homedir(), '.dsh'), 'runtimes', 'thinbook', 'current'), locate = findDsh, versionOf = readDshVersion, latest = latestDshVersion, install = installDsh, log = console.log } = {}) {
+export async function ensureDsh({ env = process.env, directory = join(env.DSH_HOME || join(homedir(), '.dsh'), 'runtimes', 'thinbook', 'current'), locate = findDsh, versionOf = readDshVersion, log = console.log } = {}) {
   const existing = await locate(env);
   const detected = await versionOf(existing, { env });
-  const managed = entryAt(directory), managedVersion = await versionOf(managed, { env });
-  log(detected ? `检测到 DSH ${detected}，正在检查最新版本…` : '正在检查 DSH 最新版本…');
-  let version;
-  try { version = await latest({ env }); }
-  catch {
-    const available = managedVersion ? managed : detected ? existing : null;
-    if (available) { log('暂时无法检查 DSH 更新，使用已安装的版本继续启动；下次启动将再次检查。'); return available; }
-    throw new Error('无法查询 DSH 最新版本，请检查网络与 npm 后重新启动。');
-  }
-  if (detected === version) { log(`DSH ${version} · 已是最新版`); return existing; }
-  if (managedVersion === version) { log(`DSH ${version} · 已是最新版`); return managed; }
-  log(detected || managedVersion ? `正在自动升级 DSH 至 ${version}…` : `未安装 DSH，正在自动安装最新版 ${version}…`);
-  log('下载和安装需要联网，请等待完成。');
-  try {
-    await install(directory, { env, version });
-    if (await versionOf(managed, { env }) !== version) throw new Error('安装后的 DSH 版本校验失败');
-  } catch (error) {
-    throw new Error(`DSH 自动安装或升级失败：${error.message}。请检查网络、npm 和安装目录权限后重新启动。`);
-  }
-  log(`DSH ${version} · 安装或升级完成`);
-  return managed;
+  if (detected) { log(`复用已安装 DSH ${detected}，不检查或下载其他版本。`); return existing; }
+  const managed = entryAt(directory);
+  const managedVersion = await versionOf(managed, { env });
+  if (managedVersion) { log(`复用已安装 DSH ${managedVersion}，不检查或下载其他版本。`); return managed; }
+  throw new Error('未找到可运行的已安装 DSH。请先安装一次并加入 PATH，或用 DSH_BIN 指定已有入口；启动器不会自动安装或升级 DSH。');
 }
 
 // Also expose the managed CLI for one-time model setup and plugin management.

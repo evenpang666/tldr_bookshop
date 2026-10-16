@@ -7,6 +7,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { openBrowser } from '../lib/browser.mjs';
+import { registerThinbook, thinbookInstalled } from './register-plugin.mjs';
 import { ensureDsh } from './dsh-runtime.mjs';
 import { dshHome, registeredThinbook, runningDsh, startupLock, installProfilePatch } from './dsh-host.mjs';
 
@@ -16,7 +17,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 
 export function readHealth(port) {
   return new Promise(resolve => {
-    const req = http.get({ hostname: '127.0.0.1', port, path: '/api/health', timeout: 500 }, res => {
+    const req = http.get({ hostname: '127.0.0.1', port, path: '/thinbook/api/health', timeout: 500 }, res => {
       let data = ''; res.on('data', chunk => { data += chunk; if (data.length > 4096) req.destroy(); });
       res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
       res.on('error', () => resolve(null));
@@ -25,12 +26,9 @@ export function readHealth(port) {
   });
 }
 
-export function launchPatch({ port, host, dataRoot = root, bundled = false }) {
-  // DSH treats a patch's name as an identity guard. A bundled row must keep
-  // its original module name, otherwise DSH skips the entire configuration.
-  const moduleName = bundled ? '' : `  name: ${JSON.stringify(pathToFileURL(join(root, 'plugin/index.mjs')).href)}\n`;
-  const entry = `- id: thinbook\n${moduleName}  disabled: false\n  config:\n    port: ${port}\n    host: ${JSON.stringify(host)}\n    dataRoot: ${JSON.stringify(dataRoot)}\n`;
-  return bundled ? entry : '- insert:\n' + entry.split('\n').filter(Boolean).map(line => `    ${line}`).join('\n') + '\n';
+export function launchPatch({ dataRoot = root } = {}) {
+  // The installed bundle owns the row; this patch configures it without inserting it again.
+  return `- id: thinbook\n  config:\n    dataRoot: ${JSON.stringify(dataRoot)}\n`;
 }
 
 export async function selectPort(preferred, host, log = console.log) {
@@ -60,53 +58,44 @@ async function remember(statePath, data) {
 
 export async function main({ open = process.argv.includes('--open'), detect = runningDsh, ensure = ensureDsh, attachTimeout = 15000 } = {}) {
   if (!process.allowedNodeEnvironmentFlags.has('--use-env-proxy')) throw new Error('请使用 Node.js 24.5+。');
-  const preferred = Number(process.env.PORT || 3210), host = process.env.HOST || '0.0.0.0';
-  if (!Number.isInteger(preferred) || preferred < 1024 || preferred > 65535) throw new Error('PORT 必须为 1024–65535。');
+  const preferred = Number(process.env.DSH_WEB_PORT || (process.env.DSH_WEB_URL ? new URL(process.env.DSH_WEB_URL).port || 80 : 3080));
+  if (!Number.isInteger(preferred) || preferred < 1 || preferred > 65535) throw new Error('DSH_WEB_PORT 必须为 1–65535。');
   const home = dshHome(), dataRoot = process.env.THINBOOK_DATA_DIR || root;
   const statePath = join(dataRoot, '.local', 'launcher.json');
   const reuse = async () => {
-    const registered = await registeredThinbook(home, readHealth);
-    let previous;
-    try { previous = JSON.parse(await readFile(statePath, 'utf8')).port; } catch {}
-    for (const candidate of [registered?.port, previous, preferred]) {
-      if (!Number.isInteger(candidate) || candidate < 1 || candidate > 65535) continue;
-      const health = await readHealth(candidate);
-      if (health?.app === 'thinbook' && health.runtime === 'dsh') {
-        const url = `http://127.0.0.1:${candidate}`;
-        console.log(`薄书已经在运行：${url} · 复用现有 DSH 服务`);
-        if (open) openBrowser(url);
-        return true;
-      }
-    }
-    return false;
+    const record = await registeredThinbook(home, readHealth);
+    if (!record) return false;
+    const url = `http://127.0.0.1:${record.port}${record.basePath}/`;
+    console.log(`薄书已经在运行：${url} · 复用现有 DSH 服务`);
+    if (open) openBrowser(record.url || url);
+    return true;
   };
-  if (await reuse()) return;
+  if (await thinbookInstalled(home, root)) {
+    await registerThinbook({ home, root });
+    if (await reuse()) return;
+  }
   let release = await startupLock(home);
   let child, exited, stop;
   try {
-    if (await reuse()) return;
+    if (await thinbookInstalled(home, root) && await reuse()) return;
     const processes = await detect({ home });
-    const port = await selectPort(preferred, host), url = `http://127.0.0.1:${port}`;
     const profile = join(home, 'profiles/web');
     let runtime;
+    if (!processes.length || !await thinbookInstalled(home, root)) runtime = await ensure();
     if (!processes.length) {
-      runtime = await ensure();
-      // Let DSH initialize its own profile. This command starts no Web server.
       await execute(runtime.command, [...runtime.args, '--profile', 'web', '--dump-default-config'], { env: process.env, timeout: 15000, windowsHide: true });
     }
-    let bundled = false;
-    try { bundled = JSON.parse(await readFile(join(profile, 'package.json'), 'utf8')).dsh?.profile?.bundles?.includes('thinbook') || false; }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
-    await installProfilePatch(home, launchPatch({ port, host, bundled, dataRoot }));
+    await registerThinbook({ home, root, runtime });
+    if (await reuse()) return;
+    await installProfilePatch(home, launchPatch({ dataRoot }));
     if (processes.length) {
       console.log('检测到已运行的 DSH Web，正在热加载薄书；不会启动第二个 DSH 服务…');
     } else {
-      // Recheck immediately before spawning, including DSH started externally
-      // while this launcher was checking updates or writing configuration.
       const appeared = await detect({ home });
       if (appeared.length) console.log('DSH Web 已启动，正在接入现有服务…');
       else {
-        child = spawn(runtime.command, [...runtime.args, '--profile', 'web', '--no-open', '--host', '127.0.0.1', '--port', '0'], { cwd: root, env: { ...process.env, PORT: String(port), HOST: host }, stdio: 'inherit', windowsHide: true });
+        const port = await selectPort(preferred, '127.0.0.1');
+        child = spawn(runtime.command, [...runtime.args, '--profile', 'web', '--no-open', '--host', '127.0.0.1', '--port', String(port)], { cwd: root, env: process.env, stdio: 'inherit', windowsHide: true });
         exited = new Promise((done, reject) => { child.once('error', reject); child.once('exit', (code, signal) => done({ code, signal })); });
         exited.catch(() => {});
         stop = () => child.kill('SIGTERM');
@@ -114,20 +103,21 @@ export async function main({ open = process.argv.includes('--open'), detect = ru
       }
     }
     const deadline = Date.now() + (child ? 60000 : attachTimeout);
-    let ready = false, finished = false;
+    let record, finished = false;
     exited?.then(() => { finished = true; }, () => { finished = true; });
     while (!finished && Date.now() < deadline) {
-      const health = await readHealth(port);
-      if (health?.app === 'thinbook' && health.runtime === 'dsh') { ready = true; break; }
+      record = await registeredThinbook(home, readHealth);
+      if (record) break;
       await new Promise(done => setTimeout(done, 200));
     }
-    if (!ready) {
+    if (!record) {
       if (child) { stop(); await exited; throw new Error('DSH 插件未能启动，请检查上方日志、端口和依赖。'); }
       throw new Error('已检测到 DSH Web，但薄书未完成热加载。请检查该服务是否启用 HMR，必要时重启原 DSH 服务；未启动第二个 DSH Web。');
     }
-    await remember(statePath, { port, preferred, host, dshPid: child?.pid || processes[0], owned: Boolean(child) });
+    const url = `http://127.0.0.1:${record.port}${record.basePath}/`;
+    await remember(statePath, { port: record.port, preferred, dshPid: record.pid, owned: Boolean(child) });
     console.log(`薄书已就绪：${url}${child ? ' · 关闭此窗口可停止本次启动的 DSH' : ' · 已复用 DSH，关闭此窗口不会停止原服务'}`);
-    if (open) openBrowser(url);
+    if (open) openBrowser(record.url || url);
     await release(); release = async () => {};
     if (exited) { const result = await exited; if (result.code) process.exitCode = result.code; }
   } finally {

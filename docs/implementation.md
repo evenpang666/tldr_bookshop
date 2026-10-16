@@ -4,7 +4,7 @@
 
 ## 插件与启动
 
-`package.json` 导出 `plugin/index.mjs`，并声明 `dsh.bundle.patch` 指向 `cordis.patch.yml`。通过 `dsh plugin --profile web add <path>` 安装后，DSH 根据 bundle 加载插件。插件依赖宿主的 `agents`、`tools`、`systemPrompt`、`web`、`credentials`、`agentDefaultModel` 和 `profileContext` 服务。
+`package.json` 导出 `plugin/index.mjs`，并声明 `dsh.bundle.patch` 指向 `cordis.patch.yml`。通过 `dsh plugin --profile web add <path>` 安装后，DSH 根据 bundle 加载插件。插件依赖宿主的 `agents`、`tools`、`systemPrompt`、`web`、`credentials`、`agentDefaultModel` 、`profileContext`、`webServer` 和 `connection` 服务。
 
 双击脚本先通过 `scripts/bootstrap-node.sh` 或 `scripts/bootstrap-node.ps1` 检测 Node.js/npm。若缺少或 Node 低于 24.5，则根据系统与架构下载官方 Node.js 24 LTS 的便携压缩包，与官方 `SHASUMS256.txt` 比对 SHA-256，解压后验证 Node/npm 可运行，再启用项目 `.runtime/node/current/`。复用可用系统环境，不需要管理员权限，不改系统 PATH。
 
@@ -12,23 +12,21 @@
 
 `scripts/launch.mjs` 先读取当前 DSH_HOME 的薄书服务记录 `<home>/thinbook/host.json`，检查记录进程和健康接口，再检测当前 DSH Web 进程。Linux 仅检查同用户的 DSH CLI 进程及其 `DSH_HOME`，区分其他 home 下的实例；Windows 使用系统进程查询，macOS 使用 `ps`。不会把 SDK、配置 dump 或包管理命令当作 Web 服务。
 
-通过 `<home>/.thinbook-start.lock` 串行化同一 home 的启动。为当前 `web` profile 的 `cordis.patch.yml` 追加带标记的薄书配置块，其他 YAML 保持原样，后续更新只替换此块；原文件为 JSON 列表时转成等价的 YAML 条目。文件以临时文件加重命名更新，写入前检查是否被其他进程修改。DSH 默认 HMR 观察该文件，因此已有 Web 服务可直接热加载薄书；其他插件不会重新创建，不会导致 `whereto` 的固定端口重复监听。
+通过 `<home>/.thinbook-start.lock` 串行化同一 home 的启动。通过现有 DSH 的 `plugin --profile web add link:<项目目录>` 正式登记依赖及 bundle，使插件管理页可以列出薄书。复用共享 profile 的 pnpm 主版本与 store，不另装 DSH。旧版托管块中的文件 `insert` 会迁移为对 bundle 行的配置覆盖，保留原 `dataRoot`；注册失败时恢复旧块。随后为当前 `web` profile 的 `cordis.patch.yml` 追加带标记的薄书配置覆盖块，其他 YAML 保持原样，后续更新只替换此块；原文件为 JSON 列表时转成等价的 YAML 条目。文件以临时文件加重命名更新，写入前检查是否被其他进程修改。DSH 默认 HMR 观察该文件，因此已有 Web 服务可直接热加载薄书；其他插件不会重新创建，不会重复加载其他项目。
 
-只有没有运行中的 DSH Web 时，才检查并更新运行时，通过官方 config dump 初始化 profile（不启动 Web），写入薄书配置，并执行：
+只有没有运行中的 DSH Web 时，才检查已有运行时，通过官方 config dump 初始化 profile（不启动 Web），写入薄书配置，并执行：
 
 ```text
-dsh --profile web --no-open --host 127.0.0.1 --port 0
+dsh --profile web --no-open --host 127.0.0.1 --port 3080
 ```
 
 启动前再次检查进程，避免配置过程中外部已启动 DSH。已有服务未能热加载时返回 HMR 检查提示，不回退为第二个 DSH。复用服务时立即打开薄书并结束启动器，不发送停止信号；自己创建的 DSH 才由该启动器管理退出。`npm run dsh -- web` 与首次配置入口也复用已运行的服务。
 
-薄书默认监听 `3210`，端口冲突时自动避让。插件启动后写入当前进程、薄书端口、DSH Web 端口及 profile 的私有服务记录，不包含 API Key、浏览器 token 或 cookie；卸载时仅清理自己写入的记录。健康检查通过后，将实际地址写入项目 `.local/launcher.json`，供重复启动复用。凭据、系统代理与防火墙不修改。
+页面默认独立监听 `0.0.0.0:3102`，本机访问 `http://127.0.0.1:3102/`，局域网设备访问 `http://主机局域网IP:实际端口/`，无需登录。首选端口由 `THINBOOK_PORT` 或插件 `config.port` 设置；端口占用时直接使用系统分配的空闲端口，启动器与页面显示实际地址。DSH 的模型和凭据继续复用，管理页认证保留，旧 DSH 子路径仅作兼容入口。
 DSH 是可选 peer 宿主和开发依赖，生产依赖只有 Undici。`DSH_BIN` 可覆盖 CLI 查找，Windows npm shim 解析到 JS 入口后直接运行，避免 shell 路径转义。
-没有正在运行的 DSH Web、需要创建服务时，通过 `npm view @deepseek-ai/dsh@latest version --json --prefer-online` 查询最新发布版本，比较已有 DSH 的实际版本。最新版直接复用；缺少、不可运行或版本不同则自动安装该次查询到的最新版到 `<DSH_HOME>/runtimes/thinbook/current/`。不进行兼容性筛选，插件的 DSH peer 范围为 `*`。开发依赖中的精确版本仅用于可重复的测试快照，不限制用户启动的运行时。
+没有正在运行的 DSH Web、需要创建服务时，直接复用 PATH 中已安装的入口；PATH 不可用时查找已有共享运行时。启动不查询最新版，不自动安装或升级 DSH；缺失时提示设置 `DSH_BIN` 或先安装一次。DSH peer 范围为 `*`，开发依赖中的精确版本仅用于可重复测试。
 
-安装使用临时目录、版本复核和重命名启用，失败不替换旧安装；同版本并发安装可以复用已完成的结果。整个流程保持 `DSH_HOME` 和凭据环境不变，不执行全局安装，不需要管理员权限。无法查询更新时，如果已有可用安装，会明确提示后继续启动；无可用安装则报告网络或 npm 错误。
-
-`npm run dsh -- <参数>` 提供同样自动检测和升级的 CLI 入口，便于管理宿主。无全局 Node/npm 时，Windows 使用 `configure.bat`、Linux 使用 `sh start.sh --dsh web` 配置 API Key，或进行插件管理。普通双击仍使用 `--no-open`，不会打开 DSH Web。
+`npm run dsh -- <参数>` 提供已有环境检测的 CLI 入口，便于管理宿主。无全局 Node/npm 时，Windows 使用 `configure.bat`、Linux 使用 `sh start.sh --dsh web` 配置 API Key，或进行插件管理。普通双击仍使用 `--no-open`，不会打开 DSH Web。
 
 ## 模型与凭据
 
@@ -66,10 +64,10 @@ DSH 是可选 peer 宿主和开发依赖，生产依赖只有 Undici。`DSH_BIN`
 
 正文取材使用 DSH 自身的网页搜索与抓取能力。来源 URL 与成功工具记录交叉核验；没有原文时至少需要两条实际检索来源。此检查不等于逐项事实验证。小说保留主线与结局，非虚构保留命题、论证及边界；资料不足时提示缺口。
 
-薄书默认监听 `0.0.0.0:3210`，只接受回环与私有网段客户端、实际网卡对应 Host，验证来源和每次启动的写入 token。可信局域网设备可以共用主机模型额度与缓存。DSH 自身仍绑定回环地址；用户自行管理防火墙，不要进行公网端口映射。
+页面默认独立监听 `0.0.0.0:3102`，本机访问 `http://127.0.0.1:3102/`，局域网设备访问 `http://主机局域网IP:实际端口/`，无需登录。首选端口由 `THINBOOK_PORT` 或插件 `config.port` 设置；端口占用时直接使用系统分配的空闲端口，启动器与页面显示实际地址。DSH 的模型和凭据继续复用，管理页认证保留，旧 DSH 子路径仅作兼容入口。
 
 `lib/network.mjs` 统一生成页面与终端的局域网链接，仅展示一个优选地址：以太网 `192.168.*` 优先，其次为其他 `192.168.*`、其他以太网私有地址及其他私有地址。排除虚拟网卡和 VPN；没有合适地址时不展示链接。完整网卡地址仍用于 Host 校验，优选展示不会改变服务监听与访问权限。
 
 ## 验证
 
-Node.js 24.5+ 下执行 `npm ci`、`npm test`。`scripts/check-harness.mjs` 使用临时 DSH_HOME、伪凭据及测试专用模型流，实际启动官方 DSH Web、加载插件、生成两篇阅读并验证缓存、配置只读和 Key 不返回。其他测试覆盖已有 DSH 热加载接入、独占端口插件不重复激活、HMR 关闭时拒绝创建第二个服务、启动锁、profile 配置保留、缺少 Node/npm、旧 Node、下载校验与清理、依赖自动修复、端口避让及重复启动、DSH 自动安装与失败恢复、输入与来源检查、书库系列、费用、缓存身份与局域网权限。付费模型与真实联网搜索质量需要有效 Key 单独验证。
+Node.js 24.5+ 下执行 `npm ci`、`npm test`。`scripts/check-harness.mjs` 使用临时 DSH_HOME、伪凭据及测试专用模型流，实际启动官方 DSH Web、加载插件、生成两篇阅读并验证缓存、配置只读和 Key 不返回。其他测试覆盖已有 DSH 热加载接入、独占端口插件不重复激活、HMR 关闭时拒绝创建第二个服务、启动锁、profile 配置保留、缺少 Node/npm、旧 Node、下载校验与清理、依赖自动修复、端口避让及重复启动、已有 DSH 入口复用与缺失提示、输入与来源检查、书库系列、费用、缓存身份与局域网权限。付费模型与真实联网搜索质量需要有效 Key 单独验证。

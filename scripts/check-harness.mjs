@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -24,28 +24,36 @@ export async function checkHarness({ transport = false } = {}) {
   try {
     const url = await new Promise((resolve, reject) => {
       timer = setTimeout(() => reject(new Error(`DSH startup timed out: ${output.slice(-5000)}`)), 20000);
-      const collect = chunk => { output += chunk; const match = output.match(/本机 (http:\/\/127\.0\.0\.1:\d+)/); if (match) resolve(match[1]); };
+      const collect = chunk => { output += chunk; const match = output.match(/\[DSH 插件\]\s+本机：(http:\/\/127\.0\.0\.1:\d+)/); if (match) resolve(match[1]); };
       child.stdout.on('data', collect); child.stderr.on('data', collect);
       child.once('error', reject); child.once('exit', code => reject(new Error(`DSH exited ${code}: ${output.slice(-5000)}`)));
     });
     clearTimeout(timer);
     const health = await (await fetch(`${url}/api/health`)).json(); assert.equal(health.runtime, 'dsh');
-    const bootstrap = await (await fetch(`${url}/api/bootstrap`)).json();
+    assert.equal((await fetch(`${url}/api/bootstrap`)).status, 200);
+    assert.equal((await fetch(`${url}/app.js`)).status, 200);
+    const record = JSON.parse(await readFile(join(home, 'thinbook/host.json'), 'utf8'));
+    assert.equal(new URL(record.url).search, '');
+    assert.equal((await fetch(`http://127.0.0.1:${record.webPort}/`)).status, 401);
+    const hostFetch = fetch;
+    const page = await (await hostFetch(url + '/')).text(); assert.match(page, /src="\/app.js"/); assert.match(page, /href="\/style.css"/);
+    assert.equal((await hostFetch(url + '/app.js')).status, 200);
+    const bootstrap = await (await hostFetch(`${url}/api/bootstrap`)).json();
     assert.equal(bootstrap.settings.managed, true); assert.equal(bootstrap.settings.hasKey, true); assert.equal(bootstrap.settings.admin, false);
     assert.ok(!JSON.stringify(bootstrap).includes('not-a-real-key'));
     const headers = { 'Content-Type': 'application/json', 'X-Thinbook-Token': bootstrap.token };
-    for (const route of ['settings', 'test-key']) assert.equal((await fetch(`${url}/api/${route}`, { method: 'POST', headers, body: '{}' })).status, 409);
+    for (const route of ['settings', 'test-key']) assert.equal((await hostFetch(`${url}/api/${route}`, { method: 'POST', headers, body: '{}' })).status, 409);
     for (const minutes of [5, 10]) {
-      const response = await fetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: bootstrap.books[0], minutes, sourceText: '离线测试原文' }) });
+      const response = await hostFetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: bootstrap.books[0], minutes, sourceText: '离线测试原文' }) });
       const events = (await response.text()).trim().split('\n').map(line => JSON.parse(line));
       assert.equal(events.at(-1).type, 'result', JSON.stringify(events) + '\n' + output.slice(-6000).replace(/\?token=[^\s]+/g, '?token=[redacted]'));
       assert.match(events.at(-1).reading.body, /会话创建/);
       assert.equal(events.at(-1).reading.provider, 'deepseek-official');
     }
-    const cached = await fetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: bootstrap.books[0], minutes: 5, sourceText: '离线测试原文' }) });
+    const cached = await hostFetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: bootstrap.books[0], minutes: 5, sourceText: '离线测试原文' }) });
     assert.equal(JSON.parse((await cached.text()).trim()).reading.cached, true);
     if (transport) {
-      const response = await fetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: bootstrap.books[0], minutes: 5 }) });
+      const response = await hostFetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: bootstrap.books[0], minutes: 5 }) });
       const events = (await response.text()).trim().split('\n').map(JSON.parse);
       assert.equal(events.at(-1).type, 'result', JSON.stringify(events));
       assert.equal(events.at(-1).reading.basis, '资料提炼');
@@ -53,20 +61,20 @@ export async function checkHarness({ transport = false } = {}) {
       assert.ok(events.some(event => event.type === 'status' && /查找/.test(event.message)));
       assert.ok(events.some(event => event.type === 'status' && /核对来源/.test(event.message)));
       for (const [marker, expected] of [['AUTH', /认证失败/], ['QUOTA', /额度不足/], ['TRANSPORT', /请求处理或网络连接失败/], ['MAX_TOKENS', /长度上限/]]) {
-        const response = await fetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: bootstrap.books[0], minutes: 5, sourceText: `offline:${marker}` }) });
+        const response = await hostFetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: bootstrap.books[0], minutes: 5, sourceText: `offline:${marker}` }) });
         const events = (await response.text()).trim().split('\n').map(JSON.parse);
         assert.equal(events.at(-1).type, 'error');
         assert.match(events.at(-1).message, expected);
         assert.doesNotMatch(JSON.stringify(events), /private-provider-detail|sk-test-secret/);
       }
       for (const [marker, expected] of [['WEB_ERROR', /联网检索暂时不可用/], ['WEB_INIT', /联网工具初始化失败/], ['NO_EVIDENCE', /资料不足/]]) {
-        const response = await fetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: { ...bootstrap.books[0], title: `offline:${marker}` }, minutes: 5 }) });
+        const response = await hostFetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: { ...bootstrap.books[0], title: `offline:${marker}` }, minutes: 5 }) });
         const events = (await response.text()).trim().split('\n').map(JSON.parse);
         assert.equal(events.at(-1).type, 'error');
         assert.match(events.at(-1).message, expected, JSON.stringify(events));
         assert.doesNotMatch(JSON.stringify(events), /private-provider-detail|sk-test-secret|without inject/);
       }
-      const readings = await (await fetch(`${url}/api/readings`)).json();
+      const readings = await (await hostFetch(`${url}/api/readings`)).json();
       assert.equal(readings.readings.length, 3, 'Failed or truncated readings must never be cached');
     }
     return { sessions: transport ? 10 : 2, response: true, skill: true, tools: true, ...(transport ? { transport: true, webTools: true, failures: 7 } : {}) };

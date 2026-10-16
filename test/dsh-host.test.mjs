@@ -85,7 +85,7 @@ for (const hmr of [true, false]) test(`existing DSH Web is reused without reload
     assert.doesNotMatch(host.output() + launcher.output(), /EADDRINUSE|entry did not activate/);
     assert.ok((await readFile(join(profile, 'cordis.patch.yml'), 'utf8')).startsWith(userPatch));
     if (hmr) {
-      assert.match(launcher.output(), /复用 DSH/); assert.equal((await readHealth(port)).runtime, 'dsh');
+      assert.match(launcher.output(), /复用 DSH/); const endpoint = JSON.parse(await readFile(join(home, 'thinbook/host.json'), 'utf8')); assert.equal((await readHealth(endpoint.webPort)).runtime, 'dsh'); assert.notEqual(endpoint.port, endpoint.webPort); assert.equal(endpoint.basePath, ''); assert.equal((await fetch(endpoint.url)).status, 200);
       assert.equal(JSON.parse(await readFile(join(home, 'thinbook/host.json'), 'utf8')).pid, host.child.pid);
       const again = launch(join(root, 'scripts/environment.mjs'), [], env);
       assert.equal(await again.exited, 0, again.output()); assert.match(again.output(), /已经在运行/);

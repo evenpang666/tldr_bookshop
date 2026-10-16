@@ -29,27 +29,46 @@ async function body(req) {
   for await (const part of req) { length += part.length; if (length > 3_000_000) throw new Error('内容过大，请缩短原文。'); parts.push(part); }
   try { return JSON.parse(Buffer.concat(parts).toString('utf8')); } catch { throw new Error('请求 JSON 格式不正确。'); }
 }
-export function createServer({ generate = async () => { throw new Error('请通过 DSH 插件启动薄书。'); }, storage = createStorage(), settings = { getConfig: async () => ({ hasKey: false, model: 'deepseek-flash', provider: 'deepseek-official' }) }, search = searchBooks, addresses = localAddresses() } = {}) {
+export function createApp({ generate = async () => { throw new Error('请通过 DSH 插件启动薄书。'); }, storage = createStorage(), settings = { getConfig: async () => ({ hasKey: false, model: 'deepseek-flash', provider: 'deepseek-official' }) }, search = searchBooks, addresses = localAddresses(), basePath: mountPath = "", connection: hostConnection = null, webServer: hostServer = null, instanceId, independent } = {}) {
   const pendingReadings = new Set();
-  return http.createServer(async (req, res) => {
+  const controllers = new Map();
+  const handler = async (req, res) => {
+    const standalone = Boolean(independent?.port) && independent.port === req.socket.localPort;
+    const connection = standalone ? null : hostConnection, webServer = standalone ? null : hostServer;
+    const basePath = standalone && !req.url.startsWith(mountPath + '/') ? '' : mountPath;
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     try {
       // Only the machine's real interfaces are accepted as Host; configuration is loopback-only.
       const host = req.headers.host || '';
-      if (!isPrivatePeer(req.socket.remoteAddress)) return json(res, 403, { error: '仅允许本机与私有局域网访问。' });
+      if ((!connection || standalone) && !isPrivatePeer(req.socket.remoteAddress)) return json(res, 403, { error: '仅允许本机与私有局域网访问。' });
       const hostname = host.replace(/:\d+$/, '');
-      if (!['127.0.0.1', 'localhost', ...addresses.map(a => a.address)].includes(hostname)) return json(res, 403, { error: '访问地址不被允许。' });
+      if ((!connection || standalone) && !['127.0.0.1', 'localhost', ...addresses.map(a => a.address)].includes(hostname)) return json(res, 403, { error: '访问地址不被允许。' });
       const admin = isLoopback(req.socket.remoteAddress) && ['127.0.0.1', 'localhost'].includes(hostname);
-      if (req.headers.origin && ![`http://${host}`].includes(req.headers.origin)) return json(res, 403, { error: '来源不被允许。' });
+      if ((!connection || standalone) && req.headers.origin && ![`http://${host}`].includes(req.headers.origin)) return json(res, 403, { error: '来源不被允许。' });
       const url = new URL(req.url, `http://${host}`);
+      if (basePath) {
+        if (url.pathname !== basePath && !url.pathname.startsWith(basePath + '/')) return json(res, 404, { error: '页面不存在。' });
+        url.pathname = url.pathname.slice(basePath.length) || '/';
+      }
+      if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { ok: true, app: 'thinbook', runtime: 'dsh', instanceId });
+      if (connection) {
+        if (['/', '/index.html'].includes(url.pathname)) {
+          const indexRequest = { method: req.method, headers: req.headers, url: '/' + url.search };
+          const indexResponse = { writeHead(status, headers = {}) { return res.writeHead(status, { ...headers, ...(status === 303 ? { location: basePath + '/' } : {}) }); }, end: data => res.end(data) };
+          if (!connection.authorizeIndex(indexRequest, indexResponse)) return;
+          if (new URL(req.url, 'http://localhost').pathname === basePath) { res.writeHead(308, { location: basePath + '/' }); return res.end(); }
+        } else {
+          const rejection = connection.requestRejection(req);
+          if (rejection) return json(res, rejection, { error: rejection === 401 ? '请先登录 DSH Web，再打开薄书。' : 'DSH 拒绝了此请求来源。' });
+        }
+      }
       if (req.method === 'GET' && url.pathname === '/api/bootstrap') {
         const config = await settings.getConfig();
         const port = req.socket.localPort;
-        return json(res, 200, { books, categories, token, version: '2.0.0', settings: { hasKey: Boolean(config.hasKey), model: config.model, provider: config.provider, managed: true, admin: false }, lanUrls: lanUrls(port, addresses), readings: await storage.listReadings() });
+        return json(res, 200, { books, categories, token, version: '2.0.0', settings: { hasKey: Boolean(config.hasKey), model: config.model, provider: config.provider, managed: true, admin: false }, lanUrls: lanUrls(independent?.port || webServer?.port || port, addresses).map(url => url + (independent?.port ? '/' : basePath ? basePath + '/' : '')), readings: await storage.listReadings() });
       }
-      if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { ok: true, app: 'thinbook', runtime: 'dsh' });
       if (req.method === 'GET' && url.pathname === '/api/readings') return json(res, 200, { readings: await storage.listReadings() });
       if (req.method === 'GET' && url.pathname.startsWith('/api/readings/')) { const reading = await storage.getReading(url.pathname.split('/').pop()); return json(res, reading ? 200 : 404, reading ? { reading: { ...reading, cached: true, chargedThisRequest: false } } : { error: '本地缓存不存在。' }); }
       if (req.method === 'GET' && url.pathname === '/api/search') {
@@ -80,6 +99,8 @@ export function createServer({ generate = async () => { throw new Error('请通�
           active++; pendingReadings.add(cacheId);
           res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
           const controller = new AbortController();
+          let settled; const done = new Promise(resolve => { settled = resolve; });
+          controllers.set(controller, done);
           const send = (type, data) => { if (!res.destroyed) res.write(JSON.stringify({ type, ...data }) + '\n'); };
           const abort = () => controller.abort(); res.once('close', abort);
           const heartbeat = setInterval(() => send('heartbeat', {}), 12000);
@@ -100,7 +121,7 @@ export function createServer({ generate = async () => { throw new Error('请通�
             else if (!/^(模型未返回|资料不足|这次提炼|未能核实|DSH 未完成|DSH 没有返回|提炼超过|检索次数)/.test(message)) message = '提炼失败，请检查 DSH 配置或补充原文后重试。';
             message = message.slice(0, 700);
             send('error', { message });
-          } finally { active--; pendingReadings.delete(cacheId); clearInterval(heartbeat); res.off('close', abort); res.end(); }
+          } finally { controllers.delete(controller); settled(); active--; pendingReadings.delete(cacheId); clearInterval(heartbeat); res.off('close', abort); res.end(); }
           return;
         }
         return json(res, 404, { error: '接口不存在。' });
@@ -109,11 +130,14 @@ export function createServer({ generate = async () => { throw new Error('请通�
       const allowed = new Set(['/', '/index.html', '/style.css', '/app.js', '/favicon.svg', '/logo.svg']);
       if (!allowed.has(url.pathname)) return json(res, 404, { error: '页面不存在。' });
       const path = join(root, 'public', url.pathname === '/' ? 'index.html' : url.pathname.slice(1));
-      const file = await readFile(path);
+      let file = await readFile(path);
+      if (basePath && extname(path) === '.html') file = Buffer.from(file.toString().replaceAll('href="/', 'href="' + basePath + '/').replaceAll('src="/', 'src="' + basePath + '/'));
       res.writeHead(200, { 'Content-Type': mime[extname(path)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
       res.end(req.method === 'HEAD' ? undefined : file);
     } catch (error) { if (!res.headersSent) json(res, 400, { error: error.name === 'TimeoutError' ? '网络请求超时，请稍后重试。' : error.message === 'fetch failed' ? '网络连接失败，请检查网络与系统代理设置。' : String(error.message || '请求失败。').slice(0, 400) }); else res.end(); }
-  });
+  };
+  return { handler, async close() { const pending = [...controllers]; for (const [controller] of pending) controller.abort(); await Promise.allSettled(pending.map(([,done]) => done)); } };
 }
+export function createServer(options) { return http.createServer(createApp(options).handler); }
 
 export { openBrowser } from './lib/browser.mjs';

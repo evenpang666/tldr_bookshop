@@ -1,3 +1,5 @@
+const basePath = location.pathname.startsWith('/thinbook') ? '/thinbook' : '';
+const appFetch = (url, options) => fetch(basePath + url, options);
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -104,7 +106,7 @@ async function onlineSearch() {
   const status = $('#search-status'); status.textContent = '正在翻找 Open Library…';
   $('#online-search').disabled = true;
   try {
-    const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`); const data = await response.json(); if (!response.ok) throw new Error(data.error);
+    const response = await appFetch(`/api/search?q=${encodeURIComponent(query)}`); const data = await response.json(); if (!response.ok) throw new Error(data.error);
     if (sequence !== state.searchSequence) return;
     state.online = data.books; state.onlineQuery = query; state.category = '全部'; state.limit = 30;
     status.textContent = data.notice || (data.books.length ? `来自 ${data.source} · 本次找到 ${data.books.length} 本` : '在线书库暂无匹配，可以直接添加书名与作者。');
@@ -115,7 +117,7 @@ async function onlineSearch() {
 async function openSettings() {
   $('#settings-status').textContent = '正在读取 DSH 配置…'; showDialog('#settings-dialog');
   try {
-    const response = await fetch('/api/bootstrap'); const data = await response.json();
+    const response = await appFetch('/api/bootstrap'); const data = await response.json();
     if (!response.ok) throw new Error(data.error);
     Object.assign(state, { hasKey: data.settings.hasKey, model: data.settings.model });
     $('#model').value = state.model; updateKeyDot();
@@ -146,7 +148,7 @@ async function startReading() {
   setReaderMode('loading'); $('#loading-stage').textContent = '正在连接 DeepSeek Harness…'; $('#activity').textContent = `${book.title} · 约 ${minutes} 分钟阅读`;
   let received = false;
   try {
-    const response = await fetch('/api/generate', { method: 'POST', headers: requestHeaders(), body: JSON.stringify({ book, minutes, sourceText, sourceComplete }), signal: state.abort.signal });
+    const response = await appFetch('/api/generate', { method: 'POST', headers: requestHeaders(), body: JSON.stringify({ book, minutes, sourceText, sourceComplete }), signal: state.abort.signal });
     if (!response.ok) { const data = await response.json(); throw new Error(data.error || '请求失败。'); }
     const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = '';
     const handleLine = line => {
@@ -178,7 +180,7 @@ function markdown(text) {
 }
 async function openReading(reading) {
   if (reading?.cacheId && !reading.body) {
-    try { const response = await fetch(`/api/readings/${encodeURIComponent(reading.cacheId)}`); const data = await response.json(); if (!response.ok) throw new Error(data.error); reading = { ...reading, ...data.reading, progress: reading.progress || 0 }; }
+    try { const response = await appFetch(`/api/readings/${encodeURIComponent(reading.cacheId)}`); const data = await response.json(); if (!response.ok) throw new Error(data.error); reading = { ...reading, ...data.reading, progress: reading.progress || 0 }; }
     catch(error) { toast(error.message || '本地缓存读取失败'); return; }
   }
   if (!reading?.body) return; state.reading = reading;
@@ -222,7 +224,7 @@ $('#export-reading').addEventListener('click', () => {
 document.addEventListener('keydown', event => { if (event.key === '/' && !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName) && !$$('dialog').some(d => d.open) && $('#reader').hidden) { event.preventDefault(); $('#search-input').focus(); } if (event.key === 'Escape' && !$('#reader').hidden) leaveReader(); });
 async function init() {
   try {
-    const response = await fetch('/api/bootstrap'); if (!response.ok) throw new Error(); const data = await response.json();
+    const response = await appFetch('/api/bootstrap'); if (!response.ok) throw new Error(); const data = await response.json();
     state.books = data.books; state.categories = data.categories; state.token = data.token;
     state.hasKey = data.settings.hasKey; state.model = data.settings.model;
     if (data.lanUrls?.length) { $('#lan-address').hidden = false; $('#lan-address').innerHTML = `同一局域网继续阅读：${data.lanUrls.map(url => `<a href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(url)}</a>`).join(' · ')}`; }

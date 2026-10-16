@@ -97,7 +97,11 @@ async function main() {
         if (Number.isInteger(record.webPort) && record.webPort > 0) {
           const url = `http://127.0.0.1:${record.webPort}`;
           console.log(`复用现有 DSH Web：${url}；若浏览器尚未认证，请使用原 DSH 终端打印的登录链接。`);
-          if (!forwarded.includes('--no-open')) openBrowser(url);
+          if (!forwarded.includes('--no-open')) {
+            const target = new URL(record.url || url);
+            target.pathname = '/';
+            openBrowser(target.origin === url ? target.href : url);
+          }
         } else console.log('DSH Web 已在运行，请使用原服务地址配置模型。');
         return;
       }
