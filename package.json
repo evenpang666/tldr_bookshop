@@ -1,6 +1,7 @@
 {
   "name": "thinbook",
   "version": "2.0.0",
+  "license": "MIT",
   "type": "module",
   "description": "薄书 · DSH Web 阅读插件",
   "engines": {
