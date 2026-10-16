@@ -1,16 +1,8 @@
 #!/usr/bin/env sh
 set -eu
-cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-if ! command -v node >/dev/null 2>&1; then
-  printf '%s\n' 'Please install Node.js 24+ from https://nodejs.org'
-  exit 1
-fi
-if ! node -e 'if(!process.allowedNodeEnvironmentFlags.has("--use-env-proxy"))process.exit(1)'; then
-  printf '%s\n' 'Please install the latest Node.js 24 LTS, at least 24.5.'
-  exit 1
-fi
-if ! node scripts/check-dependencies.mjs; then
-  printf '%s\n' 'Installing DeepSeek Harness. First launch may take a few minutes...'
-  npm ci --no-audit --no-fund
-fi
-exec node --use-env-proxy server.mjs --open
+THINBOOK_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$THINBOOK_ROOT"
+. "$THINBOOK_ROOT/scripts/bootstrap-node.sh"
+thinbook_prepare_node
+if [ "$#" -eq 0 ]; then set -- --open; fi
+exec "$THINBOOK_NODE" "$THINBOOK_ROOT/scripts/environment.mjs" "$@"

@@ -5,7 +5,7 @@ const store = {
   read(key, fallback) { try { return JSON.parse(localStorage.getItem(`thinbook:${key}`)) ?? fallback; } catch { return fallback; } },
   write(key, value) { try { localStorage.setItem(`thinbook:${key}`, JSON.stringify(value)); return true; } catch { toast('浏览器存储空间不足，本次内容仍可阅读与导出。'); return false; } },
 };
-const state = { books: [], categories: [], token: '', view: 'discover', category: '全部', query: '', limit: 24, online: [], onlineQuery: '', selected: null, minutes: 10, saved: store.read('saved', []), history: store.read('history', []), reading: null, running: false, abort: null, model: 'deepseek-flash', hasKey: false, admin: false, font: store.read('font', 18), searchSequence: 0 };
+const state = { books: [], categories: [], token: '', view: 'discover', category: '全部', query: '', limit: 24, online: [], onlineQuery: '', selected: null, minutes: 10, saved: store.read('saved', []), history: store.read('history', []), reading: null, running: false, abort: null, model: 'deepseek-flash', hasKey: false,  font: store.read('font', 18), searchSequence: 0 };
 let pendingBook = false, generationId = 0;
 let toastTimer;
 function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 3500); }
@@ -112,41 +112,21 @@ async function onlineSearch() {
   } catch (error) { if (sequence === state.searchSequence) status.textContent = error.message || '联网搜索失败，请稍后重试。'; }
   finally { $('#online-search').disabled = false; }
 }
-function openSettings() {
-  $('#api-key').value = ''; $('#model').value = state.model;
-  $('#api-key').placeholder = state.hasKey ? '已保存在项目本地，留空则保持原 Key' : 'sk-…';
-  $('#key-note').textContent = state.admin ? 'Key 保存在项目 .local/config.json，已排除版本控制与打包；网页不会读回密钥。' : '使用主机保存的配置；请在主机的 127.0.0.1 页面修改设置。';
-  $$('#settings-form input, #settings-form button:not([data-close])').forEach(node => node.disabled = !state.admin);
-  $('#settings-status').textContent = ''; showDialog('#settings-dialog');
+async function openSettings() {
+  $('#settings-status').textContent = '正在读取 DSH 配置…'; showDialog('#settings-dialog');
+  try {
+    const response = await fetch('/api/bootstrap'); const data = await response.json();
+    if (!response.ok) throw new Error(data.error);
+    Object.assign(state, { hasKey: data.settings.hasKey, model: data.settings.model });
+    $('#model').value = state.model; updateKeyDot();
+    $('#settings-status').textContent = state.hasKey ? 'DSH 配置已就绪。' : '请在 DSH 中配置 DeepSeek API Key，并将默认模型设为 DeepSeek 官方模型。';
+  } catch { $('#settings-status').textContent = '无法读取 DSH 配置，请检查服务是否仍在运行。'; }
 }
 $('#settings-open').addEventListener('click', openSettings); $('#settings-avatar').addEventListener('click', openSettings);
 function updateKeyDot() { $('#key-dot').classList.toggle('connected', state.hasKey); }
-async function saveSettings(patch) {
-  const response = await fetch('/api/settings', { method: 'POST', headers: requestHeaders(), body: JSON.stringify(patch) });
-  const data = await response.json(); if (!response.ok) throw new Error(data.error);
-  Object.assign(state, { hasKey: data.settings.hasKey, model: data.settings.model }); updateKeyDot(); return data;
-}
 $('#settings-form').addEventListener('submit', async event => {
-  event.preventDefault();
-  const model = $('#model').value.trim(), key = $('#api-key').value.trim();
-  if (!/^[a-zA-Z0-9._:-]{1,100}$/.test(model)) { $('#settings-status').textContent = '请填写有效的模型名称。'; return; }
-  if (/[\r\n]/.test(key)) return;
-  const submit = $('#settings-form button[type=submit]'); submit.disabled = true;
-  try {
-    await saveSettings({ model, ...(key ? { apiKey: key } : {}) });
-    $('#api-key').value = ''; $('#settings-dialog').close(); toast('已保存到项目本地');
-    try { sessionStorage.removeItem('thinbook:key'); localStorage.removeItem('thinbook:key'); } catch {}
-    if (pendingBook) { pendingBook = false; showDialog('#book-dialog'); }
-  } catch (error) { $('#settings-status').textContent = error.message; }
-  finally { submit.disabled = false; }
-});
-$('#clear-key').addEventListener('click', async () => { try { await saveSettings({ model: state.model, apiKey: '' }); $('#api-key').value = ''; $('#api-key').placeholder = 'sk-…'; $('#settings-status').textContent = '已移除本地 Key。'; } catch(error) { $('#settings-status').textContent = error.message; } });
-$('#test-key').addEventListener('click', async () => {
-  const key = $('#api-key').value.trim(); if (!key && !state.hasKey) { $('#settings-status').textContent = '先填写 API Key。'; return; }
-  $('#test-key').disabled = true; $('#settings-status').textContent = '正在连接…';
-  try { const response = await fetch('/api/test-key', { method: 'POST', headers: requestHeaders(), body: JSON.stringify({ apiKey: key }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); $('#settings-status').textContent = `连接成功${data.models?.length ? ` · 可用模型：${data.models.join('、')}` : ''}`; }
-  catch (error) { $('#settings-status').textContent = error.message || '连接失败，请检查网络。'; }
-  finally { $('#test-key').disabled = false; }
+  event.preventDefault(); await openSettings();
+  if (state.hasKey && pendingBook) { pendingBook = false; $('#settings-dialog').close(); showDialog('#book-dialog'); }
 });
 function openCustom() { $('#custom-form').reset(); showDialog('#custom-dialog'); }
 $('#import-open').addEventListener('click', openCustom); $('#empty-add').addEventListener('click', openCustom);
@@ -159,7 +139,7 @@ function requestHeaders() { return { 'Content-Type': 'application/json', 'X-Thin
 function setReaderMode(mode) { $('#reader').hidden = false; document.body.style.overflow = 'hidden'; $('#reader-loading').hidden = mode !== 'loading'; $('#reader-article').hidden = mode !== 'article'; $('#reader-error').hidden = mode !== 'error'; $('#export-reading').disabled = mode !== 'article'; $('#reader').scrollTop = 0; $('#reading-progress').style.width = '0'; }
 async function startReading() {
   if (state.running) return;
-  if (!state.hasKey && !state.history.some(r => r.book.title === state.selected.title && r.book.author === state.selected.author && r.minutes === state.minutes && r.cacheId)) { pendingBook = true; $('#book-dialog').close(); openSettings(); toast(state.admin ? '先在项目本地保存 Key，完成后继续。' : '请先在主机本地页面配置 Key。'); return; }
+  if (!state.hasKey && !state.history.some(r => r.book.title === state.selected.title && r.book.author === state.selected.author && r.minutes === state.minutes && r.cacheId)) { pendingBook = true; $('#book-dialog').close(); openSettings(); toast('请先在 DSH 中配置 Key，然后刷新配置。'); return; }
   const thisGeneration = ++generationId;
   const book = state.selected, minutes = state.minutes, sourceText = $('#source-text').value.trim(), sourceComplete = $('#source-complete').checked;
   $('#book-dialog').close(); state.running = true; state.abort = new AbortController(); state.reading = null;
@@ -244,18 +224,14 @@ async function init() {
   try {
     const response = await fetch('/api/bootstrap'); if (!response.ok) throw new Error(); const data = await response.json();
     state.books = data.books; state.categories = data.categories; state.token = data.token;
-    state.hasKey = data.settings.hasKey; state.model = data.settings.model; state.admin = data.settings.admin;
+    state.hasKey = data.settings.hasKey; state.model = data.settings.model;
     if (data.lanUrls?.length) { $('#lan-address').hidden = false; $('#lan-address').innerHTML = `同一局域网继续阅读：${data.lanUrls.map(url => `<a href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(url)}</a>`).join(' · ')}`; }
     // Discard malformed browser data rather than preventing startup.
     state.saved = Array.isArray(state.saved) ? state.saved.filter(b => b && typeof b.title === 'string' && typeof b.author === 'string') : [];
     state.history = Array.isArray(state.history) ? state.history.filter(r => r?.book && typeof r.body === 'string' && r.title && r.author) : [];
     state.history = [...(data.readings || []).map(r => ({ ...r, progress: state.history.find(old => old.cacheId === r.cacheId)?.progress || 0 })), ...state.history.filter(r => !r.cacheId)];
-    // One-time migration: never return a server-side key or keep it in browser storage.
-    try {
-      const legacyKey = sessionStorage.getItem('thinbook:key') || localStorage.getItem('thinbook:key');
-      if (legacyKey && state.admin && !state.hasKey) await saveSettings({ apiKey: legacyKey, model: state.model });
-      if (state.hasKey || !legacyKey) { sessionStorage.removeItem('thinbook:key'); localStorage.removeItem('thinbook:key'); }
-    } catch { toast('旧版 Key 尚未迁移，请在主机设置中重新保存。'); }
+    // Discard keys left by older browser versions; DSH owns credentials now.
+    try { sessionStorage.removeItem('thinbook:key'); localStorage.removeItem('thinbook:key'); } catch {}
     renderCategories(); render(); updateKeyDot();
   } catch { $('#search-status').textContent = '本地服务未连接，请使用启动脚本打开薄书。'; }
 }

@@ -3,8 +3,9 @@ export const name = 'thinbook-offline-check';
 export const inject = ['llm'];
 export function apply(ctx) {
   ctx.on('llm/stream', async function* (options) {
+    if (options.messages.some(message => !message.role || !message.id)) throw new Error('Reader messages require a role and stable identity');
     const names = (options.tools || []).map(tool => tool.name).sort();
-    if (JSON.stringify(names) !== JSON.stringify(['skill', 'web_fetch', 'web_search'])) throw new Error(`Unexpected reader tools: ${names.join(', ')}`);
+    if (JSON.stringify(names) !== JSON.stringify(['web_fetch', 'web_search'])) throw new Error(`Unexpected reader tools: ${names.join(', ')}`);
     const prompt = JSON.stringify(options.messages);
     if (!prompt.includes('thin-book') || !prompt.includes('薄书阅读智能体')) throw new Error('Reader skill was not included in model context');
     const text = JSON.stringify({

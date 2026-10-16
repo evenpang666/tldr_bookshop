@@ -1,20 +1,66 @@
 {
   "name": "thinbook",
-  "version": "1.1.0",
-  "private": true,
+  "version": "2.0.0",
   "type": "module",
-  "description": "薄书 · 让好书变薄的本地阅读智能体",
+  "description": "薄书 · DSH Web 阅读插件",
   "engines": {
     "node": ">=24.5.0"
   },
   "scripts": {
-    "start": "node --use-env-proxy server.mjs --open",
-    "dev": "node --use-env-proxy server.mjs",
+    "start": "node scripts/environment.mjs --open",
+    "dev": "node scripts/environment.mjs",
+    "dsh": "node scripts/environment.mjs --dsh",
     "test": "node --test"
   },
   "dependencies": {
-    "@deepseek-ai/dsh": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-sdk-client": "0.2.0-rc.2",
     "undici": "8.12.1"
+  },
+  "main": "./plugin/index.mjs",
+  "exports": {
+    ".": "./plugin/index.mjs",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "plugin/",
+    "harness/reader.mjs",
+    "lib/",
+    "public/",
+    "data/",
+    ".dsh/skills/",
+    "cordis.patch.yml",
+    "scripts/launch.mjs",
+    "scripts/dsh-runtime.mjs",
+    "scripts/environment.mjs",
+    "scripts/bootstrap-node.sh",
+    "scripts/bootstrap-node.ps1",
+    "start.sh",
+    "start.bat",
+    "ThinBook.desktop",
+    "README.md",
+    "docs/implementation.md",
+    "docs/guide.md",
+    "server.mjs",
+    "scripts/check-dependencies.mjs",
+    "docs/assets/",
+    "docs/catalog-series.md",
+    "configure.bat",
+    "scripts/dsh-host.mjs"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-agent-preset-registry": "0.2.0-rc.2"
   }
 }

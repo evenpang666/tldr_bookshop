@@ -1,29 +1,82 @@
 import assert from 'node:assert/strict';
-import { createHarness, parseReading, root } from '../harness/reader.mjs';
-import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { root } from '../harness/reader.mjs';
 
-export async function checkHarness() {
-  await mkdir(join(root, '.runtime'), { recursive: true });
-  const home = await mkdtemp(join(root, '.runtime/check-'));
+export async function checkHarness({ transport = false } = {}) {
+  const home = await mkdtemp(join(tmpdir(), 'thinbook-dsh-check-'));
   const patch = join(home, 'offline.patch.yml');
-  await writeFile(patch, `- insert:\n    - id: thinbook-offline-check\n      name: ${JSON.stringify(pathToFileURL(join(root, 'scripts/fixtures/offline-llm.mjs')).href)}\n`);
-  const harness = await createHarness({ apiKey: 'not-a-real-key-offline-check', home, extraPatches: [patch] });
+  const profile = join(home, 'profiles/web');
+  await mkdir(join(profile, 'node_modules'), { recursive: true });
+  await writeFile(join(profile, 'package.json'), JSON.stringify({ name: 'thinbook-check-profile', private: true, dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'thinbook'] } } }));
+  await symlink(root, join(profile, 'node_modules/thinbook'), process.platform === 'win32' ? 'junction' : 'dir');
+  await writeFile(join(home, '.credentials.yaml'), 'version: 1\nrefs:\n  DEEPSEEK_API_KEY: not-a-real-key-offline-check\n', { mode: 0o600 });
+  await writeFile(patch, `- id: session-title-llm\n  disabled: true\n- id: llm-retry\n  disabled: true\n- id: thinbook\n  config:\n    port: 0\n    host: 127.0.0.1\n    dataRoot: ${JSON.stringify(home)}\n- insert:\n    - id: thinbook-offline-check\n      name: ${JSON.stringify(pathToFileURL(join(root, `scripts/fixtures/offline-${transport ? 'transport' : 'llm'}.mjs`)).href)}\n`);
+  if (transport) await writeFile(patch, '- id: web\n  config:\n    searchProvider: thinbook-offline\n    fetchProvider: thinbook-offline\n', { flag: 'a' });
+  const child = spawn(process.execPath, [join(root, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), '--profile', 'web', '--patch', patch, '--no-open', '--port', '0'], {
+    cwd: root, env: { ...process.env, DSH_HOME: home, DEEPSEEK_API_KEY: '', DSH_TELEMETRY_DISABLED: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '', timer;
+  const exited = new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
   try {
-    await harness.start();
-    const first = await harness.run('离线运行时验证；模型输出由测试插件提供。');
-    const second = await harness.run('创建另一个会话，检查重复创建与作用域事件。');
-    assert.notEqual(first.sessionId, second.sessionId);
-    for (const result of [first, second]) {
-      assert.ok(result.events.some(event => event.type === 'assistant/message'));
-      const reading = parseReading(result.finalResponse, { title: '离线运行时验证', author: '测试数据' }, true);
-      assert.equal(reading.basis, '节选缩写');
-      assert.match(reading.body, /会话创建/);
+    const url = await new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`DSH startup timed out: ${output.slice(-5000)}`)), 20000);
+      const collect = chunk => { output += chunk; const match = output.match(/本机 (http:\/\/127\.0\.0\.1:\d+)/); if (match) resolve(match[1]); };
+      child.stdout.on('data', collect); child.stderr.on('data', collect);
+      child.once('error', reject); child.once('exit', code => reject(new Error(`DSH exited ${code}: ${output.slice(-5000)}`)));
+    });
+    clearTimeout(timer);
+    const health = await (await fetch(`${url}/api/health`)).json(); assert.equal(health.runtime, 'dsh');
+    const bootstrap = await (await fetch(`${url}/api/bootstrap`)).json();
+    assert.equal(bootstrap.settings.managed, true); assert.equal(bootstrap.settings.hasKey, true); assert.equal(bootstrap.settings.admin, false);
+    assert.ok(!JSON.stringify(bootstrap).includes('not-a-real-key'));
+    const headers = { 'Content-Type': 'application/json', 'X-Thinbook-Token': bootstrap.token };
+    for (const route of ['settings', 'test-key']) assert.equal((await fetch(`${url}/api/${route}`, { method: 'POST', headers, body: '{}' })).status, 409);
+    for (const minutes of [5, 10]) {
+      const response = await fetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: bootstrap.books[0], minutes, sourceText: '离线测试原文' }) });
+      const events = (await response.text()).trim().split('\n').map(line => JSON.parse(line));
+      assert.equal(events.at(-1).type, 'result', JSON.stringify(events) + '\n' + output.slice(-6000).replace(/\?token=[^\s]+/g, '?token=[redacted]'));
+      assert.match(events.at(-1).reading.body, /会话创建/);
+      assert.equal(events.at(-1).reading.provider, 'deepseek-official');
     }
-    return { sessions: 2, response: true, skill: true, tools: true };
-  } finally { await harness.close(); await rm(home, { recursive: true, force: true }); }
+    const cached = await fetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: bootstrap.books[0], minutes: 5, sourceText: '离线测试原文' }) });
+    assert.equal(JSON.parse((await cached.text()).trim()).reading.cached, true);
+    if (transport) {
+      const response = await fetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: bootstrap.books[0], minutes: 5 }) });
+      const events = (await response.text()).trim().split('\n').map(JSON.parse);
+      assert.equal(events.at(-1).type, 'result', JSON.stringify(events));
+      assert.equal(events.at(-1).reading.basis, '资料提炼');
+      assert.deepEqual(events.at(-1).reading.sources.map(source => source.url).sort(), ['https://a.example/book', 'https://b.example/book']);
+      assert.ok(events.some(event => event.type === 'status' && /查找/.test(event.message)));
+      assert.ok(events.some(event => event.type === 'status' && /核对来源/.test(event.message)));
+      for (const [marker, expected] of [['AUTH', /认证失败/], ['QUOTA', /额度不足/], ['TRANSPORT', /请求处理或网络连接失败/], ['MAX_TOKENS', /长度上限/]]) {
+        const response = await fetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: bootstrap.books[0], minutes: 5, sourceText: `offline:${marker}` }) });
+        const events = (await response.text()).trim().split('\n').map(JSON.parse);
+        assert.equal(events.at(-1).type, 'error');
+        assert.match(events.at(-1).message, expected);
+        assert.doesNotMatch(JSON.stringify(events), /private-provider-detail|sk-test-secret/);
+      }
+      for (const [marker, expected] of [['WEB_ERROR', /联网检索暂时不可用/], ['WEB_INIT', /联网工具初始化失败/], ['NO_EVIDENCE', /资料不足/]]) {
+        const response = await fetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: { ...bootstrap.books[0], title: `offline:${marker}` }, minutes: 5 }) });
+        const events = (await response.text()).trim().split('\n').map(JSON.parse);
+        assert.equal(events.at(-1).type, 'error');
+        assert.match(events.at(-1).message, expected, JSON.stringify(events));
+        assert.doesNotMatch(JSON.stringify(events), /private-provider-detail|sk-test-secret|without inject/);
+      }
+      const readings = await (await fetch(`${url}/api/readings`)).json();
+      assert.equal(readings.readings.length, 3, 'Failed or truncated readings must never be cached');
+    }
+    return { sessions: transport ? 10 : 2, response: true, skill: true, tools: true, ...(transport ? { transport: true, webTools: true, failures: 7 } : {}) };
+  } finally {
+    clearTimeout(timer); child.kill('SIGTERM');
+    const killTimer = setTimeout(() => child.kill('SIGKILL'), 5000);
+    await exited; clearTimeout(killTimer);
+    await rm(home, { recursive: true, force: true });
+  }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  checkHarness().then(() => console.log('PASS: official Harness created two sessions and completed offline model turns; reader skill and tool permissions verified. No API calls.')).catch(error => { console.error(error); process.exitCode = 1; });
+  checkHarness().then(() => console.log('PASS: DSH Web loaded the native plugin, reused managed credentials, completed two offline readings and served the cache. No model API calls.')).catch(error => { console.error(error); process.exitCode = 1; });
 }
