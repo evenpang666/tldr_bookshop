@@ -63,19 +63,17 @@ test('failed generation or failed replacement write leaves old content intact', 
   assert.equal((await api.storage.listReadings()).length, 1);
 });
 
-test('old source caches require reimport and invalid replacement IDs do not generate', async t => {
+test('old source caches can use automatic lookup and invalid replacement IDs do not generate', async t => {
   let calls = 0, input;
   const api = await setup(t, async options => { calls++; input = options; return original; });
   await api.storage.saveReading(oldId, { ...original, generationInput: undefined });
-  const missing = await api.request();
-  assert.equal(missing.status, 400); assert.equal((await missing.json()).code, 'SOURCE_REQUIRED');
   for (const invalid of ['../bad', 'b'.repeat(64)]) {
     const response = await api.request({ replaceCacheId: invalid });
     assert.ok([400, 404].includes(response.status)); await response.json();
   }
   assert.equal(calls, 0);
-  const result = (await api.events(await api.request({ sourceText: '重新导入的原文。', sourceComplete: true }))).at(-1);
-  assert.equal(result.type, 'result'); assert.equal(input.sourceText, '重新导入的原文。'); assert.equal(input.sourceComplete, true);
+  const result = (await api.events(await api.request())).at(-1);
+  assert.equal(result.type, 'result'); assert.equal(input.sourceText, '');
 });
 
 test('replacement target is locked against duplicate generation', async t => {

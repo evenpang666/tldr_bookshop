@@ -8,7 +8,11 @@ const store = {
   write(key, value) { try { localStorage.setItem(`thinbook:${key}`, JSON.stringify(value)); return true; } catch { toast('浏览器存储空间不足，本次内容仍可阅读与导出。'); return false; } },
 };
 const state = { books: [], categories: [], token: '', view: 'discover', category: '全部', query: '', limit: 24, online: [], onlineQuery: '', selected: null, minutes: 10, saved: store.read('saved', []), history: store.read('history', []), reading: null, running: false, abort: null, model: 'deepseek-flash', hasKey: false,  font: store.read('font', 18), searchSequence: 0 };
-let pendingBook = false, generationId = 0;
+state.bookSources = []; state.sourceUploads = new Set();
+const sameBook = (a, b) => a?.title?.trim() === b?.title?.trim() && a?.author?.trim() === b?.author?.trim();
+const sourceKey = book => JSON.stringify([book.title.trim(), book.author.trim()]);
+const localSource = book => state.bookSources.find(source => sameBook(source.book, book));
+let pendingBook = false, generationId = 0, originalLoadId = 0;
 let toastTimer;
 function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 3500); }
 function showDialog(id) { const dialog = $(id); if (!dialog.open) dialog.showModal(); }
@@ -49,7 +53,7 @@ function render() {
   $('#continue-section').hidden = state.view !== 'discover' || !state.history.length;
   if (state.history.length) $('#continue-title').textContent = state.history[0].title;
   const shown = rows.slice(0, state.limit);
-  $('#book-grid').innerHTML = shown.map((book, i) => `<div class="book-card" style="animation-delay:${Math.min(i, 9) * 20}ms"><button class="book-open" data-book-index="${i}" aria-label="阅读《${escapeHTML(book.title)}》">${cover(book)}<div class="book-info"><h3>${escapeHTML(book.title)}</h3><p>${escapeHTML(book.author)}</p><p class="book-description">${escapeHTML(book.description || '打开这本书，探索它的故事与思想。')}</p><span class="book-tag">${escapeHTML(book.category)}</span></div></button><button class="card-save ${isSaved(book) ? 'saved' : ''}" data-save-index="${i}" aria-label="${isSaved(book) ? '移出书架' : '加入书架'}：${escapeHTML(book.title)}" aria-pressed="${isSaved(book)}">${isSaved(book) ? '♥' : '♡'}</button></div>`).join('');
+  $('#book-grid').innerHTML = shown.map((book, i) => `<div class="book-card" style="animation-delay:${Math.min(i, 9) * 20}ms"><button class="book-open" data-book-index="${i}" aria-label="阅读《${escapeHTML(book.title)}》">${cover(book)}<div class="book-info"><h3>${escapeHTML(book.title)}</h3><p>${escapeHTML(book.author)}</p><p class="book-description">${escapeHTML(book.description || '打开这本书，探索它的故事与思想。')}</p><span class="book-tag">${escapeHTML(book.category)}</span></div></button><label class="card-source" title="${escapeHTML(localSource(book)?.name || '为这本书选择本地 TXT / Markdown 原文')}"><input type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" data-source-index="${i}" aria-label="为《${escapeHTML(book.title)}》选择本地原文" ${state.sourceUploads.has(sourceKey(book)) ? 'disabled' : ''}>${state.sourceUploads.has(sourceKey(book)) ? '正在保存…' : localSource(book) ? '✓ 本地原文' : '＋ 选择原文'}</label><button class="card-save ${isSaved(book) ? 'saved' : ''}" data-save-index="${i}" aria-label="${isSaved(book) ? '移出书架' : '加入书架'}：${escapeHTML(book.title)}" aria-pressed="${isSaved(book)}">${isSaved(book) ? '♥' : '♡'}</button></div>`).join('');
   $('#empty-state').hidden = rows.length > 0;
   $('#empty-message').textContent = state.view === 'saved' ? '将想读的书加入书架，下次从这里继续。' : state.view === 'history' ? '读完第一本薄书，这里就有了故事。' : '试试联网找书，或添加你想读的书。';
   $('#load-more').hidden = rows.length <= state.limit;
@@ -59,6 +63,10 @@ function render() {
     else openBook(book);
   }));
   $$('[data-save-index]').forEach(button => button.addEventListener('click', () => toggleSave(shown[Number(button.dataset.saveIndex)])));
+  $$('[data-source-index]').forEach(input => input.addEventListener('change', event => {
+    const book = shown[Number(input.dataset.sourceIndex)], file = event.target.files[0];
+    if (file) { openBook(book); importSourceFile(file, book); }
+  }));
   $$('.nav-item[data-view]').forEach(button => { button.classList.toggle('active', button.dataset.view === state.view); if (button.dataset.view === state.view) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); });
 }
 function toggleSave(book) {
@@ -68,7 +76,7 @@ function toggleSave(book) {
 }
 function updateSaveButton() { $('#save-book').textContent = isSaved(state.selected) ? '✓ 已在书架' : '＋ 加入书架'; }
 function openBook(book) {
-  state.selected = book; state.minutes = 10; state.replaceReading = null;
+  state.selected = book; state.minutes = 10;
   $('#read-book').textContent = '把这本书读薄 ↗';
   $('#detail-title').textContent = book.title; $('#detail-author').textContent = book.author;
   $('#detail-category').textContent = book.category; $('#detail-cover').innerHTML = cover(book);
@@ -85,8 +93,37 @@ function openBook(book) {
     $('#library').scrollIntoView({ behavior: 'smooth' });
   } : null;
   $('#source-text').value = ''; $('#source-file').value = ''; $('#source-complete').checked = false;
+  updateSourceInfo();
   $$('#length-options button').forEach(b => { b.disabled = false; b.classList.toggle('selected', b.dataset.minutes === '10'); });
   updateSaveButton(); showDialog('#book-dialog');
+}
+function updateSourceInfo() {
+  const source = state.selected && localSource(state.selected);
+  const uploading = state.selected && state.sourceUploads.has(sourceKey(state.selected));
+  $('#source-status').textContent = uploading ? '正在读取并保存本地原文…' : source ? `已关联：${source.name} · ${source.characters.toLocaleString()} 字，生成时优先使用。` : '如果您有原文，可以直接上传。如果没有，AI会自己检索';
+  $('#source-file').disabled = Boolean(uploading); $('#source-text').disabled = Boolean(uploading);
+  $('#source-complete').disabled = Boolean(uploading); $('#read-book').disabled = Boolean(uploading);
+  if (source && !$('#source-text').value.trim()) $('#source-complete').checked = source.sourceComplete;
+}
+async function saveLocalSource(book, payload) {
+  const response = await appFetch('/api/book-sources', { method: 'POST', headers: requestHeaders(), body: JSON.stringify({ book, ...payload }) });
+  const data = await response.json(); if (!response.ok) throw new Error(data.error || '本地原文保存失败。');
+  state.bookSources = [data.source, ...state.bookSources.filter(source => !sameBook(source.book, book))];
+}
+async function importSourceFile(file, book) {
+  if (state.sourceUploads.has(sourceKey(book))) return;
+  if (!/\.(txt|md|markdown)$/i.test(file.name)) { toast('请选择 UTF-8 TXT 或 Markdown 原文。'); return; }
+  if (file.size > 2400000) { toast('文件过大，请截取部分原文。'); return; }
+  state.sourceUploads.add(sourceKey(book)); render(); if (sameBook(state.selected, book)) updateSourceInfo();
+  try {
+    const text = (await file.text()).trim();
+    if (!text || text.includes('\0')) throw new Error('文件没有可读取的正文，请选择 UTF-8 TXT 或 Markdown 原文。');
+    if (text.length > 600000) throw new Error('原文超过 60 万字，请分段导入。');
+    await saveLocalSource(book, { sourceText: text, sourceComplete: false, name: file.name });
+    if (sameBook(state.selected, book)) { $('#source-text').value = ''; $('#source-file').value = ''; }
+    toast(`已为《${book.title}》关联本地原文。`);
+  } catch (error) { toast(error.message || '本地原文读取失败，请重选文件。'); }
+  finally { state.sourceUploads.delete(sourceKey(book)); render(); if (sameBook(state.selected, book)) updateSourceInfo(); }
 }
 $$('[data-view]').forEach(button => button.addEventListener('click', () => {
   state.view = button.dataset.view; state.category = '全部'; state.query = ''; state.online = []; state.onlineQuery = ''; state.limit = 24; state.searchSequence++;
@@ -135,7 +172,14 @@ function openCustom() { $('#custom-form').reset(); showDialog('#custom-dialog');
 $('#import-open').addEventListener('click', openCustom); $('#empty-add').addEventListener('click', openCustom);
 $('#custom-form').addEventListener('submit', event => { event.preventDefault(); const title = $('#custom-title').value.trim(), author = $('#custom-author').value.trim(); if (!title || !author) return; $('#custom-dialog').close(); openBook({ id: `custom-${title}-${author}`, title, author, category: '自选书籍', color: 2 }); });
 $('#length-options').addEventListener('click', event => { const button = event.target.closest('[data-minutes]'); if (!button) return; state.minutes = Number(button.dataset.minutes); $$('#length-options button').forEach(b => b.classList.toggle('selected', b === button)); });
-$('#source-file').addEventListener('change', async event => { const file = event.target.files[0]; if (!file) return; if (file.size > 2400000) { toast('文件过大，请截取部分原文。'); event.target.value = ''; return; } const text = await file.text(); if (text.length > 600000) { toast('原文超过 60 万字，请分段导入。'); return; } $('#source-text').value = text; toast(`已导入 ${text.length.toLocaleString()} 字`); });
+$('#source-file').addEventListener('change', event => { const file = event.target.files[0]; if (file && state.selected) return importSourceFile(file, state.selected); });
+$('#source-complete').addEventListener('change', async () => {
+  const book = state.selected; if (!book || !localSource(book) || $('#source-text').value.trim()) return;
+  const sourceComplete = $('#source-complete').checked;
+  state.sourceUploads.add(sourceKey(book)); updateSourceInfo();
+  try { await saveLocalSource(book, { sourceComplete }); } catch (error) { toast(error.message); }
+  finally { state.sourceUploads.delete(sourceKey(book)); if (sameBook(state.selected, book)) updateSourceInfo(); }
+});
 $('#save-book').addEventListener('click', () => toggleSave(state.selected));
 $('#read-book').addEventListener('click', () => startReading());
 $('#regenerate-reading').addEventListener('click', regenerateReading);
@@ -143,47 +187,35 @@ function requestHeaders() { return { 'Content-Type': 'application/json', 'X-Thin
 function setReaderMode(mode) { $('#reader').hidden = false; document.body.style.overflow = 'hidden'; $('#reader-loading').hidden = mode !== 'loading'; $('#reader-article').hidden = mode !== 'article'; $('#reader-error').hidden = mode !== 'error'; $('#export-reading').disabled = mode !== 'article'; $('#regenerate-reading').disabled = mode !== 'article'; $('#reader').scrollTop = 0; $('#reading-progress').style.width = '0'; }
 async function startReading() {
   if (state.running) return;
-  if (state.replaceReading) {
-    if (!$('#source-text').value.trim()) { toast('请先重新导入原文。'); return; }
-    const previous = state.replaceReading;
-    $('#book-dialog').close();
-    return runReading({ book: previous.book, minutes: previous.minutes, sourceText: $('#source-text').value.trim(), sourceComplete: $('#source-complete').checked, force: true, ...(previous.cacheId ? { replaceCacheId: previous.cacheId } : {}) }, previous);
-  }
+  if (state.sourceUploads.has(sourceKey(state.selected))) { toast('原文正在保存，请稍候。'); return; }
   if (!state.hasKey && !state.history.some(r => r.book.title === state.selected.title && r.book.author === state.selected.author && r.minutes === state.minutes && r.cacheId)) { pendingBook = true; $('#book-dialog').close(); openSettings(); toast('请先在 DSH 中配置 Key，然后刷新配置。'); return; }
   const input = { book: state.selected, minutes: state.minutes, sourceText: $('#source-text').value.trim(), sourceComplete: $('#source-complete').checked };
   $('#book-dialog').close();
   return runReading(input);
 }
-function requestOriginal(reading) {
-  openBook(reading.book || { title: reading.title, author: reading.author });
-  state.minutes = reading.minutes || 10; state.replaceReading = { ...reading, book: state.selected, minutes: state.minutes };
-  $('#read-book').textContent = '重新读薄 ↻';
-  $('#source-complete').checked = reading.basis === '原文缩写';
-  $('.source-input').open = true;
-  $$('#length-options button').forEach(b => { b.disabled = true; b.classList.toggle('selected', Number(b.dataset.minutes) === state.minutes); });
-  toast('这篇旧阅读未保存原文，请重新导入后读薄。');
-}
 async function regenerateReading() {
   if (state.running || !state.reading) return;
   const previous = state.reading;
-  if (!previous.canRegenerate && previous.basis !== '资料提炼') { requestOriginal(previous); return; }
+  if (state.sourceUploads.has(sourceKey(previous.book || previous))) { toast('原文正在保存，请稍候。'); return; }
   return runReading({ book: previous.book || { title: previous.title, author: previous.author }, minutes: previous.minutes || 10, force: true, ...(previous.cacheId ? { replaceCacheId: previous.cacheId } : {}) }, previous);
 }
 async function runReading(input, previous = null) {
   if (state.running) return;
   const thisGeneration = ++generationId;
-  state.running = true; state.abort = new AbortController(); state.reading = previous;
+  state.running = true; state.abort = new AbortController(); state.reading = previous; state.draftBody = ''; state.retryInput = { input, previous };
+  $('#reader-stream').hidden = true;
   setReaderMode('loading'); $('#loading-stage').textContent = previous ? '正在重新读薄…' : '正在连接 DeepSeek Harness…'; $('#activity').textContent = `${input.book.title} · 约 ${input.minutes} 分钟阅读`;
   let received = false;
   try {
     const response = await appFetch('/api/generate', { method: 'POST', headers: requestHeaders(), body: JSON.stringify(input), signal: state.abort.signal });
-    if (!response.ok) { const data = await response.json(); if (data.code === 'SOURCE_REQUIRED' && previous && thisGeneration === generationId) { await openReading(previous); requestOriginal(previous); return; } throw new Error(data.error || '请求失败。'); }
+    if (!response.ok) { const data = await response.json(); throw new Error(data.error || '请求失败。'); }
     const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = '';
     const handleLine = line => {
       if (!line.trim() || thisGeneration !== generationId) return; const event = JSON.parse(line);
-      if (event.type === 'status') $('#loading-stage').textContent = event.message;
+      if (event.type === 'status') { $('#loading-stage').textContent = event.message; if (state.draftBody) $('#stream-status').textContent = event.message; }
+      if (event.type === 'partial' && typeof event.body === 'string' && event.body) renderPartial(input, event.body);
       if (event.type === 'error') throw new Error(event.message);
-      if (event.type === 'result') { received = true; openReading({ ...event.reading, progress: 0 }); saveReading(state.reading, previous); state.replaceReading = null; if (event.reading.cacheWarning) toast(event.reading.cacheWarning); else if (previous) toast('已重新读薄并覆盖原内容。'); }
+      if (event.type === 'result') { const scrollTop = state.draftBody ? $('#reader').scrollTop : undefined; received = true; openReading({ ...event.reading, progress: 0 }, scrollTop); saveReading(state.reading, previous); state.retryInput = null; if (event.reading.cacheWarning) toast(event.reading.cacheWarning); else if (previous) toast('已重新读薄并覆盖原内容。'); }
     };
     while (true) { const { done, value } = await reader.read(); if (done) { buffer += decoder.decode(); break; } buffer += decoder.decode(value, { stream: true }); const lines = buffer.split('\n'); buffer = lines.pop(); for (const line of lines) handleLine(line); }
     if (buffer.trim()) handleLine(buffer);
@@ -191,10 +223,28 @@ async function runReading(input, previous = null) {
   } catch (error) {
     if (error.name !== 'AbortError' && thisGeneration === generationId && !received) {
       if (previous) { await openReading(previous); toast(`${error.message || '重新读薄失败。'} 原内容已保留。`); }
+      else if (state.draftBody) { $('#stream-status').textContent = `${error.message || '生成中断。'} 已显示部分内容，本次尚未完成。`; $('#stream-retry').hidden = false; $('#cancel-output').hidden = true; }
       else { setReaderMode('error'); $('#error-message').textContent = error.message || '连接失败，请重试。'; }
     }
   } finally { if (thisGeneration === generationId) { state.running = false; state.abort = null; } }
 }
+function renderPartial(input, body) {
+  if (!state.draftBody) {
+    setReaderMode('article'); originalLoadId++; $('#original-dialog').close();
+    $('#reader-title').textContent = input.book.title; $('#reader-basis').textContent = '正在分段生成 · THINBOOK';
+    for (const selector of ['#reader-notes', '#reader-sources', '#reader-original', '#reader-coverage-box', '#finish-reading', '.reading-end']) $(selector).hidden = true;
+    $('#reader-body').style.setProperty('--reading-font', `${state.font}px`);
+  }
+  state.draftBody = body;
+  const scrollTop = Number($('#reader').scrollTop) || 0;
+  $('#reader-body').innerHTML = markdown(body); $('#reader').scrollTop = scrollTop;
+  $('#reader-meta').textContent = `${input.book.author} / 已生成 ${body.length.toLocaleString()} 字 / 尚未完成`;
+  $('#reader-stream').hidden = false; $('#stream-status').textContent = '新内容会继续追加，全部完成后自动保存。';
+  $('#cancel-output').hidden = false; $('#stream-retry').hidden = true;
+  $('#regenerate-reading').disabled = true; $('#export-reading').disabled = true;
+}
+$('#cancel-output').addEventListener('click', () => leaveReader());
+$('#stream-retry').addEventListener('click', () => { if (!state.running && state.retryInput) return runReading(state.retryInput.input, state.retryInput.previous); });
 function safeUrl(value) { try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) ? url.href : null; } catch { return null; } }
 // Only a small, escaped Markdown subset is rendered. Raw HTML and remote images are never inserted.
 function inline(text) {
@@ -209,15 +259,18 @@ function markdown(text) {
     return `<p>${inline(block).replace(/\n/g, '<br>')}</p>`;
   }).join('');
 }
-async function openReading(reading) {
+async function openReading(reading, scrollTop) {
   if (reading?.cacheId && !reading.body) {
     try { const response = await appFetch(`/api/readings/${encodeURIComponent(reading.cacheId)}`); const data = await response.json(); if (!response.ok) throw new Error(data.error); reading = { ...reading, ...data.reading, progress: reading.progress || 0 }; }
     catch(error) { toast(error.message || '本地缓存读取失败'); return; }
   }
   if (!reading?.body) return; state.reading = reading;
+  state.draftBody = ''; $('#reader-stream').hidden = true; $('#reader-coverage-box').hidden = false; $('#finish-reading').hidden = false; $('.reading-end').hidden = false;
+  originalLoadId++; $('#original-dialog').close(); $('#original-content').innerHTML = '';
   const historyIndex = state.history.findIndex(r => r.cacheId && r.cacheId === reading.cacheId);
   if (historyIndex >= 0) state.history[historyIndex] = reading;
-  setReaderMode('article'); $('#reader-basis').textContent = `${reading.basis} · THINBOOK`;
+  setReaderMode('article'); const materialLabel = { 'local-original': '本地原文', 'web-original': '网络原文', 'web-reference': '网页资料', 'web-mixed': '原文＋资料补全' }[reading.sourceMode];
+  $('#reader-basis').textContent = `${reading.basis}${materialLabel ? ` · ${materialLabel}` : ''} · THINBOOK`;
   $('#reader-title').textContent = reading.title;
   $('#reader-meta').textContent = `${reading.author}  /  ${reading.body.length.toLocaleString()} 字  /  约 ${Math.max(1, Math.round(reading.body.length / 350))} 分钟`;
   const cost = reading.cost;
@@ -225,14 +278,35 @@ async function openReading(reading) {
   const chargeText = reading.cached ? '本次读取本地缓存 · API 费用 US$0 · ' : reading.cacheWarning ? '' : '已缓存至项目本地 · ';
   $('#reader-meta').innerHTML += `<small class="reading-cost" title="${escapeHTML(cost?.note || '')}">${chargeText}${costText}</small>`;
   $('#reader-body').innerHTML = markdown(reading.body); $('#reader-coverage').textContent = reading.coverage;
+  $('#reader-coverage-map').innerHTML = (reading.coverageMap || []).map(section => `<li>${escapeHTML(section.section)}：${section.basis === 'original' ? '原文压缩' : '资料补全'}</li>`).join('');
+  $('#reader-coverage-map').hidden = !$('#reader-coverage-map').innerHTML;
   const notes = typeof reading.notes === 'string' ? reading.notes.trim() : '';
   $('#reader-notes-text').textContent = notes; $('#reader-notes').hidden = !notes;
   $('#sources-list').innerHTML = (reading.sources || []).filter(s => safeUrl(s.url)).map(s => `<li><a href="${escapeHTML(safeUrl(s.url))}" target="_blank" rel="noopener noreferrer">${escapeHTML(s.title)} ↗</a></li>`).join('');
   $('#reader-sources').hidden = !$('#sources-list').children.length;
+  const original = reading.original, originalLinks = (original?.links || []).filter(link => safeUrl(link.url));
+  $('#reader-original').hidden = !originalLinks.length;
+  $('#original-links').innerHTML = originalLinks.map(link => `<li><a href="${escapeHTML(safeUrl(link.url))}" target="_blank" rel="noopener noreferrer">${escapeHTML(link.title || '原文来源')} ↗</a></li>`).join('');
+  $('#view-original').hidden = !(original?.cached && reading.cacheId); $('#view-original').disabled = false;
+  $('#original-status').textContent = original?.cached && reading.cacheId ? `已缓存检索到的完整原文 · ${Number(original.characters || 0).toLocaleString()} 字` : original?.complete ? '已检索到完整原文，可通过来源链接阅读。' : '仅检索到部分原文，提供原文链接。';
   $('#reader-body').style.setProperty('--reading-font', `${state.font}px`);
   const progress = reading.progress || 0;
-  requestAnimationFrame(() => { const node = $('#reader'); node.scrollTop = (node.scrollHeight - node.clientHeight) * progress; });
+  requestAnimationFrame(() => { const node = $('#reader'); node.scrollTop = typeof scrollTop === 'number' ? scrollTop : (node.scrollHeight - node.clientHeight) * progress; });
 }
+$('#view-original').addEventListener('click', async () => {
+  const reading = state.reading; if (!reading?.original?.cached || !reading.cacheId) return;
+  const loadId = ++originalLoadId;
+  $('#original-title').textContent = `《${reading.title}》原文`;
+  $('#original-content').textContent = '正在读取原文缓存…';
+  $('#view-original').disabled = true; showDialog('#original-dialog');
+  try {
+    const response = await appFetch(`/api/readings/${encodeURIComponent(reading.cacheId)}/original`);
+    const data = await response.json(); if (!response.ok) throw new Error(data.error || '原文缓存读取失败。');
+    if (loadId !== originalLoadId || !$('#original-dialog').open) return;
+    $('#original-content').innerHTML = data.original.pages.map(page => `<section class="original-page"><h3>${escapeHTML(page.title || '原文')}</h3>${safeUrl(page.url) ? `<a href="${escapeHTML(safeUrl(page.url))}" target="_blank" rel="noopener noreferrer">查看原文来源 ↗</a>` : ''}<div class="original-text">${escapeHTML(page.text)}</div></section>`).join('');
+  } catch (error) { if (loadId === originalLoadId && $('#original-dialog').open) $('#original-content').textContent = error.message || '原文缓存读取失败，请使用原文链接。'; }
+  finally { if (loadId === originalLoadId) $('#view-original').disabled = false; }
+});
 function saveReading(reading, previous = null) {
   state.history = [reading, ...state.history.filter(r => !(previous?.cacheId && r.cacheId === previous.cacheId) && !(r.book.title === reading.book.title && r.book.author === reading.book.author && r.minutes === reading.minutes))].slice(0, 20);
   store.write('history', state.history); render();
@@ -245,7 +319,7 @@ $('#reader').addEventListener('scroll', () => {
   if (!state.reading) return; state.reading.progress = progress;
   clearTimeout(progressTimer); progressTimer = setTimeout(() => store.write('history', state.history), 500);
 }, { passive: true });
-function leaveReader() { generationId++; state.abort?.abort(); state.abort = null; state.running = false; $('#reader').hidden = true; document.body.style.overflow = ''; if (state.reading) store.write('history', state.history); render(); }
+function leaveReader() { generationId++; originalLoadId++; $('#original-dialog').close(); state.abort?.abort(); state.abort = null; state.running = false; state.draftBody = ''; $('#reader').hidden = true; document.body.style.overflow = ''; if (state.reading) store.write('history', state.history); render(); }
 $('#reader-back').addEventListener('click', leaveReader); $('#cancel-reading').addEventListener('click', leaveReader); $('#finish-reading').addEventListener('click', leaveReader);
 $('#retry-reading').addEventListener('click', () => { leaveReader(); openBook(state.selected); });
 $('#continue-button').addEventListener('click', () => { if (state.history[0]) openReading({ ...state.history[0], cached: true, chargedThisRequest: false }); });
@@ -255,14 +329,16 @@ $('#export-reading').addEventListener('click', () => {
   const r = state.reading; if (!r) return;
   const notes = typeof r.notes === 'string' ? r.notes.trim() : '';
   const notesText = notes ? `## 书籍附注\n\n<small>${escapeHTML(notes).replace(/\r?\n/g, '<br>')}</small>\n\n` : '';
-  const text = `# ${r.title}\n\n${r.author} · ${r.basis}\n\n${r.body}\n\n---\n\n${notesText}${r.coverage}\n\n${(r.sources || []).map(s => `- ${s.title}: ${s.url}`).join('\n')}\n`;
+  const coverageMap = (r.coverageMap || []).map(section => `${escapeHTML(section.section)}：${section.basis === 'original' ? '原文压缩' : '资料补全'}（${(section.urls || []).map(escapeHTML).join('；')}）`).join('<br>');
+  const originalLinks = (r.original?.links || []).filter(link => safeUrl(link.url)).map(link => `- ${link.title || '原文来源'}: ${link.url}`).join('\n');
+  const text = `# ${r.title}\n\n${r.author} · ${r.basis}\n\n${r.body}\n\n---\n\n${notesText}${r.coverage}\n\n${coverageMap ? `<small>${coverageMap}</small>\n\n` : ''}${(r.sources || []).map(s => `- ${s.title}: ${s.url}`).join('\n')}\n${originalLinks ? `\n## 原文链接\n\n${originalLinks}\n` : ''}`;
   const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' })); const a = document.createElement('a'); a.href = url; a.download = `${r.title.replace(/[\\/:*?"<>|]/g, '_')}-薄书.md`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
-document.addEventListener('keydown', event => { if (event.key === '/' && !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName) && !$$('dialog').some(d => d.open) && $('#reader').hidden) { event.preventDefault(); $('#search-input').focus(); } if (event.key === 'Escape' && !$('#reader').hidden) leaveReader(); });
+document.addEventListener('keydown', event => { if (event.key === '/' && !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName) && !$$('dialog').some(d => d.open) && $('#reader').hidden) { event.preventDefault(); $('#search-input').focus(); } if (event.key === 'Escape' && !$('#reader').hidden && !$$('dialog').some(d => d.open)) leaveReader(); });
 async function init() {
   try {
     const response = await appFetch('/api/bootstrap'); if (!response.ok) throw new Error(); const data = await response.json();
-    state.books = data.books; state.categories = data.categories; state.token = data.token;
+    state.books = data.books; state.categories = data.categories; state.token = data.token; state.bookSources = data.bookSources || [];
     state.hasKey = data.settings.hasKey; state.model = data.settings.model;
     if (data.lanUrls?.length) { $('#lan-address').hidden = false; $('#lan-address').innerHTML = `同一局域网继续阅读：${data.lanUrls.map(url => `<a href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(url)}</a>`).join(' · ')}`; }
     // Discard malformed browser data rather than preventing startup.

@@ -9,6 +9,7 @@ import { localAddresses, lanUrls, isLoopback, isPrivatePeer } from './lib/networ
 import { searchBooks } from './lib/search.mjs';
 import { createHash } from 'node:crypto';
 import { ReadingError } from './lib/reading-error.mjs';
+import { originalMetadata } from './lib/retrieved-original.mjs';
 
 const token = randomBytes(32).toString('hex');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
@@ -26,8 +27,9 @@ export function validateInput(input) {
 function json(res, status, body) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); }
 // Keep imported source text on disk for regeneration, out of browser history/API responses.
 function publicReading(reading) {
-  const { generationInput, ...result } = reading;
-  return { ...result, canRegenerate: Boolean(generationInput && reading.cacheId) || reading.basis === '资料提炼' };
+  const { generationInput, original, ...result } = reading;
+  const metadata = originalMetadata(original, reading.cacheId);
+  return { ...result, ...(metadata ? { original: metadata } : {}), canRegenerate: true };
 }
 async function body(req) {
   let length = 0; const parts = [];
@@ -72,9 +74,15 @@ export function createApp({ generate = async () => { throw new Error('请通过 
       if (req.method === 'GET' && url.pathname === '/api/bootstrap') {
         const config = await settings.getConfig();
         const port = req.socket.localPort;
-        return json(res, 200, { books, categories, token, version: '2.0.0', settings: { hasKey: Boolean(config.hasKey), model: config.model, provider: config.provider, managed: true, admin: false }, lanUrls: lanUrls(independent?.port || webServer?.port || port, addresses).map(url => url + (independent?.port ? '/' : basePath ? basePath + '/' : '')), readings: await storage.listReadings() });
+        return json(res, 200, { books, categories, token, version: '2.0.0', settings: { hasKey: Boolean(config.hasKey), model: config.model, provider: config.provider, managed: true, admin: false }, lanUrls: lanUrls(independent?.port || webServer?.port || port, addresses).map(url => url + (independent?.port ? '/' : basePath ? basePath + '/' : '')), readings: await storage.listReadings(), bookSources: await storage.listBookSources() });
       }
       if (req.method === 'GET' && url.pathname === '/api/readings') return json(res, 200, { readings: await storage.listReadings() });
+      if (req.method === 'GET' && /^\/api\/readings\/[^/]+\/original$/.test(url.pathname)) {
+        const reading = await storage.getReading(url.pathname.split('/')[3]);
+        const metadata = originalMetadata(reading?.original, reading?.cacheId);
+        if (!metadata?.cached) return json(res, 404, { error: '这篇阅读没有可查看的完整原文缓存。' });
+        return json(res, 200, { original: { title: reading.title, author: reading.author, links: metadata.links, pages: reading.original.pages } });
+      }
       if (req.method === 'GET' && url.pathname.startsWith('/api/readings/')) { const reading = await storage.getReading(url.pathname.split('/').pop()); return json(res, reading ? 200 : 404, reading ? { reading: publicReading({ ...reading, cached: true, chargedThisRequest: false }) } : { error: '本地缓存不存在。' }); }
       if (req.method === 'GET' && url.pathname === '/api/search') {
         const q = (url.searchParams.get('q') || '').trim().slice(0, 200);
@@ -88,6 +96,15 @@ export function createApp({ generate = async () => { throw new Error('请通过 
       if (req.method === 'POST') {
         if (req.headers['x-thinbook-token'] !== token) return json(res, 403, { error: '会话已更新，请刷新页面后重试。' });
         if (!(req.headers['content-type'] || '').includes('application/json')) return json(res, 415, { error: '需要 JSON 请求。' });
+        if (url.pathname === '/api/book-sources') {
+          const request = await body(req);
+          const { book } = validateInput(request);
+          const previous = await storage.getBookSource(book);
+          const input = validateInput({ ...request, sourceText: request.sourceText ?? previous?.sourceText });
+          if (!input.sourceText.trim()) return json(res, 400, { error: '原文为空，请选择包含正文的 TXT 或 Markdown 文件。' });
+          const name = String(request.name || previous?.name || '本地原文').slice(0, 200);
+          return json(res, 200, { source: { ...await storage.saveBookSource(book, { ...input, name }), book: { title: book.title, author: book.author } } });
+        }
         if (url.pathname === '/api/settings' || url.pathname === '/api/test-key') {
           return json(res, admin ? 409 : 403, { error: '密钥与模型由 DSH 管理，请在 DSH 中修改后刷新薄书。' });
         }
@@ -99,10 +116,12 @@ export function createApp({ generate = async () => { throw new Error('请通过 
             if (request.force !== true || typeof request.replaceCacheId !== 'string' || !/^[a-f0-9]{64}$/.test(request.replaceCacheId)) return json(res, 400, { error: '重新读薄的缓存编号无效。' });
             replacement = await storage.getReading(request.replaceCacheId);
             if (!replacement) return json(res, 404, { error: '原阅读已不存在，请刷新最近阅读。' });
-            if (!replacement.generationInput && replacement.basis !== '资料提炼' && !request.sourceText?.trim()) return json(res, 400, { code: 'SOURCE_REQUIRED', error: '这篇旧阅读未保存原文，请重新导入原文后读薄。' });
           }
           const originalInput = replacement ? { book: replacement.book, minutes: replacement.minutes, ...(replacement.generationInput || {}), ...(request.sourceText ? { sourceText: request.sourceText, sourceComplete: request.sourceComplete } : {}) } : request;
-          const input = { ...validateInput({ ...originalInput, model: config.model }), provider: config.provider || 'deepseek-official', reasoningEffort: config.reasoningEffort };
+          let input = { ...validateInput({ ...originalInput, model: config.model }), provider: config.provider || 'deepseek-official', reasoningEffort: config.reasoningEffort };
+          const local = await storage.getBookSource(input.book);
+          if (!request.sourceText?.trim() && local?.sourceText?.trim()) input = { ...input, sourceText: local.sourceText, sourceComplete: local.sourceComplete };
+          input.sourceText = input.sourceText.trim();
           const skill = await readFile(join(root, '.dsh/skills/thin-book/SKILL.md'), 'utf8');
           const cacheId = storage.cacheKey({ ...input, skillHash: createHash('sha256').update(skill).digest('hex') });
           if (!request.force) { const cached = await storage.getReading(cacheId); if (cached) { res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end(JSON.stringify({ type: 'result', reading: publicReading({ ...cached, cached: true, chargedThisRequest: false }) }) + '\n'); } }
@@ -120,9 +139,10 @@ export function createApp({ generate = async () => { throw new Error('请通过 
           const heartbeat = setInterval(() => send('heartbeat', {}), 12000);
           try {
             send('status', { message: '正在启动阅读智能体…' });
-            const reading = await generate({ ...input, signal: controller.signal, onStatus: message => send('status', { message }) });
+            const reading = await generate({ ...input, signal: controller.signal, onStatus: message => send('status', { message }), onPartial: partial => { if (!controller.signal.aborted && typeof partial?.body === 'string') send('partial', { body: partial.body }); } });
             controller.signal.throwIfAborted();
-            let saved = { ...reading, generationInput: { sourceText: input.sourceText, sourceComplete: input.sourceComplete }, cached: false, chargedThisRequest: true };
+            const { original, ...content } = reading;
+            let saved = { ...content, ...(!input.sourceText && original ? { original } : {}), generationInput: { sourceText: input.sourceText, sourceComplete: input.sourceComplete }, cached: false, chargedThisRequest: true };
             try { saved = await storage.saveReading(cacheId, saved); } catch {
               if (replacement) { send('error', { message: '重新读薄未能保存，原内容已保留。请检查磁盘空间后重试。' }); return; }
               saved.cacheWarning = '正文已生成，但本地磁盘缓存写入失败。请立即导出保存。';
