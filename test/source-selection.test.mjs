@@ -126,6 +126,64 @@ test('attribution repair can retrieve missing reference evidence and is bounded 
   assert.equal(blocked.prompts.length, 4);
 });
 
+test('repair can correct a directory-only original registration using explicitly classified fetched chapter pages', async () => {
+  const chapters = [1, 2].map(number => ({ title: `原文章节 ${number}`, url: `https://a.example/book/chapter-${number}` }));
+  const chapterEvents = chapters.flatMap((source, index) => [
+    { type: 'tool/call', data: { callId: `chapter-${index}`, name: 'web_fetch' } },
+    { type: 'tool/result', data: { message: { toolCallId: `chapter-${index}`, isError: false }, meta: { url: source.url, statusCode: 200, truncated: false } } },
+  ]);
+  const rows = coverageMap.map(row => row.basis === 'original' ? { ...row, urls: chapters.map(source => source.url) } : row);
+  const agent = driver([
+    { ...partialDiscovery(false), events: [...partialDiscovery(false).events, ...chapterEvents] },
+    { events: search('refs'), output: { ...answer, sources: [...sources, ...chapters], coverageMap: rows } },
+    { output: { originals: chapters.map(source => ({ url: source.url })), coverageMap: rows } },
+  ]);
+  const reading = await agent.generate({ book, minutes: 10 });
+  assert.equal(reading.body, answer.body); assert.deepEqual(reading.coverageMap, rows);
+  assert.deepEqual(reading.original.links.map(source => source.url), chapters.map(source => source.url));
+  assert.match(agent.prompts[2], /unknown-original-url/);
+  assert.ok(agent.prompts[2].includes(chapters[0].url));
+});
+
+test('repair cannot promote searched-only, failed or newly fetched reference pages to original text', async () => {
+  for (const mode of ['search-only', 'failed', 'reference-phase']) {
+    const source = { title: '候选章节', url: 'https://a.example/book/unread' };
+    const fetchEvents = [
+      { type: 'tool/call', data: { callId: 'unread', name: 'web_fetch' } },
+      { type: 'tool/result', data: { message: { toolCallId: 'unread', isError: mode === 'failed' }, meta: { url: source.url, statusCode: mode === 'failed' ? 403 : 200 } } },
+    ];
+    const discovery = partialDiscovery(false);
+    discovery.events.push({ type: 'tool/call', data: { callId: 'candidate-search', name: 'web_search' } }, { type: 'tool/result', data: { message: { toolCallId: 'candidate-search' }, meta: { sources: [source] } } });
+    if (mode === 'failed') discovery.events.push(...fetchEvents);
+    const rows = coverageMap.map(row => row.basis === 'original' ? { ...row, urls: [source.url] } : row);
+    const patch = { originals: [{ url: source.url }], coverageMap: rows, sources: [...sources, source] };
+    const agent = driver([discovery, { events: [...search('refs'), ...(mode === 'reference-phase' ? fetchEvents : [])], output: { ...answer, ...patch } }, { output: patch }, { output: patch }]);
+    await assert.rejects(agent.generate({ book, minutes: 10 }), /对应关系/);
+  }
+});
+
+test('incremental metadata repair preserves earlier valid chapters, source links and body', async () => {
+  const incomplete = { ...answer, coverageMap: coverageMap.slice(0, -2) };
+  const agent = driver([
+    partialDiscovery(false), { events: search('refs'), output: incomplete },
+    { output: { coverageMap: [coverageMap.at(-2)], sources: [sources[1]] } },
+    { output: { coverageMap: [coverageMap.at(-1)], sources: [sources[2]], body: '不能覆盖正文。' } },
+  ]);
+  const reading = await agent.generate({ book, minutes: 10 });
+  assert.equal(reading.body, answer.body); assert.deepEqual(reading.coverageMap, coverageMap);
+  assert.deepEqual(reading.sources, sources); assert.equal(agent.prompts.length, 4);
+});
+
+test('mixed readings retain verified chapter sources beyond the old sixteen-link limit', async () => {
+  const references = Array.from({ length: 18 }, (_, index) => ({ title: `资料 ${index}`, url: `https://references.example/chapter-${index}` }));
+  const referenceSearch = search('many-refs'); referenceSearch[1].data.meta.sources = references;
+  const rows = [coverageMap[0], ...missingSections.map((section, index) => ({ section, basis: 'reference', urls: references.slice(index * 6, index * 6 + 6).map(source => source.url) }))];
+  const agent = driver([partialDiscovery(false), { events: referenceSearch, output: { ...answer, sources: [sources[0], ...references], coverageMap: rows } }]);
+  const reading = await agent.generate({ book, minutes: 10 });
+  assert.equal(reading.sources.length, 19); assert.deepEqual(reading.coverageMap, rows);
+  assert.equal(agent.prompts.length, 2);
+});
+
 test('unreadable original candidates trigger a separate reference search and honest labeling', async () => {
   const agent = driver([
     { events: [...search('original-search'), ...fetchPage(false, true)], output: { originals: [{ url: sources[0].url, complete: true }], reason: '候选页面无法读取。' } },

@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { findPnpm } from './dsh-runtime.mjs';
+import { registrationCurrent, rememberRegistration } from './dsh-version.mjs';
 
 const execute = promisify(execFile);
 const begin = '# >>> thinbook launcher >>>', end = '# <<< thinbook launcher <<<';
@@ -45,7 +46,7 @@ export async function registerThinbook({ home, root, runtime, env = process.env,
   try { original = await readFile(path, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const migrated = original === undefined ? undefined : migrateLauncherPatch(original);
   const installed = await thinbookInstalled(home, root);
-  if (installed) { if (migrated !== undefined) await savePatch(path, original, migrated); return; }
+  if (installed && registrationCurrent(profile, 'thinbook', runtime?.version)) { if (migrated !== undefined) await savePatch(path, original, migrated); return; }
   const childEnv = { ...env, DSH_HOME: home };
   let metadata = {};
   try {
@@ -69,6 +70,7 @@ export async function registerThinbook({ home, root, runtime, env = process.env,
     log('正在将薄书注册到 DSH Web 插件列表…');
     await run(runtime.command, [...runtime.args, 'plugin', '--profile', 'web', 'add', `link:${root}`], { cwd: root, env: childEnv, timeout: 120000, maxBuffer: 1024 * 1024, windowsHide: true });
     if (!await thinbookInstalled(home, root)) throw new Error('DSH 未完成薄书 bundle 注册。');
+    rememberRegistration(profile, 'thinbook', runtime?.version);
   } catch (error) {
     if (migrated !== undefined && migrated !== original && !await thinbookInstalled(home, root)) {
       try { await savePatch(path, migrated, original); } catch {}

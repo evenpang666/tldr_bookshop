@@ -69,7 +69,7 @@ export async function checkHarness({ transport = false } = {}) {
       assert.ok(retriedEvents.some(event => event.type === 'status' && /自动拆分/.test(event.message)));
       const response = await hostFetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: bootstrap.books[0], minutes: 5 }) });
       const events = (await response.text()).trim().split('\n').map(JSON.parse);
-      assert.equal(events.at(-1).type, 'result', JSON.stringify(events));
+      assert.equal(events.at(-1).type, 'result', JSON.stringify(events) + '\n' + output.slice(-6000).replace(/\?token=[^\s]+/g, '?token=[redacted]'));
       assert.equal(events.at(-1).reading.basis, '资料提炼');
       assert.equal(events.at(-1).reading.sourceMode, 'web-reference');
       assert.match(events.at(-1).reading.coverage, /未获得可读取原文/);
@@ -98,6 +98,15 @@ export async function checkHarness({ transport = false } = {}) {
         if (marker === 'EXCERPT') assert.deepEqual(events.at(-1).reading.coverageMap.map(section => section.basis), ['original', 'reference', 'reference']);
         assert.ok(!events.some(event => event.type === 'status' && /回退/.test(event.message)));
       }
+      const correctedResponse = await hostFetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: { ...bootstrap.books[0], title: 'offline:ORIGINAL_INDEX' }, minutes: 10 }) });
+      const correctedEvents = (await correctedResponse.text()).trim().split('\n').map(JSON.parse);
+      assert.equal(correctedEvents.at(-1).type, 'result', JSON.stringify(correctedEvents));
+      const corrected = correctedEvents.at(-1).reading;
+      assert.equal(corrected.sourceMode, 'web-mixed');
+      assert.deepEqual(corrected.original.links.map(source => source.url), ['https://a.example/book/chapter-1']);
+      assert.deepEqual(corrected.coverageMap[0].urls, ['https://a.example/book/chapter-1']);
+      assert.ok(correctedEvents.some(event => event.type === 'status' && /自动补核对/.test(event.message)));
+      assert.equal(corrected.sources.length, 4, 'A partial repair must retain previous reference links');
       const continued = await hostFetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: bootstrap.books[0], minutes: 5, sourceText: 'offline:MAX_TOKENS' }) });
       const continuedEvents = (await continued.text()).trim().split('\n').map(JSON.parse);
       assert.equal(continuedEvents.at(-1).type, 'result', JSON.stringify(continuedEvents));
@@ -118,10 +127,16 @@ export async function checkHarness({ transport = false } = {}) {
         assert.match(events.at(-1).message, expected, JSON.stringify(events));
         assert.doesNotMatch(JSON.stringify(events), /private-provider-detail|sk-test-secret|without inject/);
       }
+      const budgetResponse = await hostFetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: { ...bootstrap.books[0], title: 'offline:WEB_BUDGET' }, minutes: 5 }) });
+      const budgetEvents = (await budgetResponse.text()).trim().split('\n').map(JSON.parse);
+      assert.equal(budgetEvents.at(-1).type, 'result', JSON.stringify(budgetEvents) + '\n' + output.slice(-6000).replace(/\?token=[^\s]+/g, '?token=[redacted]'));
+      assert.equal(budgetEvents.at(-1).reading.sourceMode, 'web-reference');
+      assert.match(budgetEvents.at(-1).reading.body, /检索预算用完后/);
+      assert.ok(budgetEvents.some(event => event.type === 'status' && /本阶段尝试/.test(event.message)));
       const readings = await (await hostFetch(`${url}/api/readings`)).json();
-      assert.equal(readings.readings.length, 8, 'Failed readings must never be cached; completed continuation must be saved');
+      assert.equal(readings.readings.length, 10, 'Failed readings must never be cached; completed continuation and metadata repairs must be saved');
     }
-    return { sessions: transport ? 14 : 3, response: true, skill: true, tools: true, ...(transport ? { transport: true, webTools: true, failures: 6 } : {}) };
+    return { sessions: transport ? 16 : 3, response: true, skill: true, tools: true, ...(transport ? { transport: true, webTools: true, failures: 6 } : {}) };
   } finally {
     clearTimeout(timer); child.kill('SIGTERM');
     const killTimer = setTimeout(() => child.kill('SIGKILL'), 5000);

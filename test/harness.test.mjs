@@ -7,5 +7,5 @@ test('DSH Web loads the native plugin and reuses managed credentials for isolate
 });
 
 test('real DSH provider runs web tools, verifies sources and reports structured failures without leaking secrets', { timeout: 30000 }, async () => {
-  assert.deepEqual(await checkHarness({ transport: true }), { sessions: 14, response: true, skill: true, tools: true, transport: true, webTools: true, failures: 6 });
+  assert.deepEqual(await checkHarness({ transport: true }), { sessions: 16, response: true, skill: true, tools: true, transport: true, webTools: true, failures: 6 });
 });

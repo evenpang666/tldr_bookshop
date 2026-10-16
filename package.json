@@ -32,6 +32,7 @@
     "cordis.patch.yml",
     "scripts/launch.mjs",
     "scripts/dsh-runtime.mjs",
+    "scripts/dsh-version.mjs",
     "scripts/environment.mjs",
     "scripts/bootstrap-node.sh",
     "scripts/bootstrap-node.ps1",

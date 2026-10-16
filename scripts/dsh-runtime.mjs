@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
+import { supportsDsh, ensureDshVersion } from './dsh-version.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const validVersion = version => typeof version === 'string' && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version);
@@ -111,7 +112,8 @@ export async function installDsh(directory, { version = 'latest', env = process.
     if (!installed || version !== 'latest' && installed !== version) throw new Error('安装后的 DSH 版本校验失败');
     try { await rename(staging, directory); }
     catch (error) {
-      if (!['EEXIST', 'ENOTEMPTY'].includes(error.code)) throw error;
+      if (!['EEXIST', 'ENOTEMPTY', 'EPERM'].includes(error.code)) throw error;
+      await access(directory); // Windows reports EPERM for a non-empty destination.
       // A simultaneous launch may have finished the same installation first.
       if (await versionOf(entryAt(directory), { env }) === installed) return;
       backup = `${directory}.old-${randomUUID()}`;
@@ -125,14 +127,16 @@ export async function installDsh(directory, { version = 'latest', env = process.
   }
 }
 
-export async function ensureDsh({ env = process.env, directory = join(env.DSH_HOME || join(homedir(), '.dsh'), 'runtimes', 'thinbook', 'current'), locate = findDsh, versionOf = readDshVersion, log = console.log } = {}) {
+export async function ensureDsh({ env = process.env, directory = join(env.DSH_HOME || join(homedir(), '.dsh'), 'runtimes', 'thinbook', 'current'), locate = findDsh, versionOf = readDshVersion, locateNpm = findNpm, upgrade = ensureDshVersion, log = console.log } = {}) {
   const existing = await locate(env);
   const detected = await versionOf(existing, { env });
-  if (detected) { log(`复用已安装 DSH ${detected}，不检查或下载其他版本。`); return existing; }
+  if (supportsDsh(detected)) { log(`复用已安装 DSH ${detected}，最低版本检查通过。`); return { ...existing, version: detected }; }
   const managed = entryAt(directory);
   const managedVersion = await versionOf(managed, { env });
-  if (managedVersion) { log(`复用已安装 DSH ${managedVersion}，不检查或下载其他版本。`); return managed; }
-  throw new Error('未找到可运行的已安装 DSH。请先安装一次并加入 PATH，或用 DSH_BIN 指定已有入口；启动器不会自动安装或升级 DSH。');
+  if (supportsDsh(managedVersion)) { log(`复用已安装 DSH ${managedVersion}，最低版本检查通过。`); return { ...managed, version: managedVersion }; }
+  const npm = await locateNpm(env);
+  const checked = await upgrade({ cli: existing?.args?.[0], version: detected, npm: npm.args[0], env, log });
+  return { command: process.execPath, args: [checked.cli], version: checked.version };
 }
 
 // Also expose the managed CLI for one-time model setup and plugin management.

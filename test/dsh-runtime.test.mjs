@@ -24,23 +24,27 @@ async function fakeDsh(directory, version = latestVersion) {
 
 test('latest DSH is reused without running an installer', async () => {
   const existing = { command: 'existing-dsh', args: [] };
-  assert.equal(await ensureDsh({ locate: async () => existing, versionOf: async () => latestVersion, install: async () => assert.fail('unexpected install'), log() {} }), existing);
+  assert.deepEqual(await ensureDsh({ locate: async () => existing, versionOf: async () => latestVersion, upgrade: async () => assert.fail('unexpected install'), log() {} }), { ...existing, version: latestVersion });
 });
 
 test('an installed DSH is reused without querying npm, even when a different managed version exists',async t=>{
   const directory=await fixture(t);await fakeDsh(directory,'9.0.0');
   const existing=await fakeDsh(join(directory,'existing'),'0.2.0-rc.2');
   const result=await ensureRuntime({directory,locate:async()=>existing,latest:async()=>assert.fail('no npm query'),install:async()=>assert.fail('no install'),log(){}});
-  assert.equal(result,existing);
+  assert.deepEqual(result,{...existing,version:'0.2.0-rc.2'});
 });
 test('an existing managed DSH is reused when PATH DSH is missing',async t=>{
   const directory=await fixture(t);await fakeDsh(directory);
   const runtime=await ensureRuntime({directory,locate:async()=>null,latest:async()=>assert.fail('no npm query'),install:async()=>assert.fail('no install'),log(){}});
   assert.equal(await readDshVersion(runtime),latestVersion);
 });
-test('missing DSH reports installation guidance instead of querying or downloading',async t=>{
+test('missing or outdated DSH invokes the fixed-version upgrader',async t=>{
   const directory=await fixture(t);
-  await assert.rejects(ensureRuntime({directory,locate:async()=>null,versionOf:async()=>null,latest:async()=>assert.fail('no query'),install:async()=>assert.fail('no install'),log(){}}),/不会自动安装或升级/);
+  for (const installed of [null, '0.1.5-rc.1']) {
+    const runtime=await ensureRuntime({directory,locate:async()=>installed?{command:'node',args:['old.js']}:null,versionOf:async candidate=>candidate?.args[0]==='old.js'?installed:null,
+      locateNpm:async()=>({command:process.execPath,args:['npm-cli.js']}),upgrade:async options=>{assert.equal(options.version,installed);return {cli:'updated.js',version:'0.2.0-rc.2'};},log(){}});
+    assert.deepEqual(runtime.args,['updated.js']);assert.equal(runtime.version,'0.2.0-rc.2');
+  }
 });
 
 test('wrong downloaded version is rejected before replacing an old runtime', async t => {
@@ -80,5 +84,5 @@ test('latest version is queried from npm latest tag without a compatibility rang
 test('startup does not query update services when an installed runtime is available',async()=>{
   const existing={command:'existing-dsh',args:[]};
   const runtime=await ensureRuntime({locate:async()=>existing,versionOf:async candidate=>candidate===existing?'0.2.0-rc.2':null,latest:async()=>assert.fail('no query'),install:async()=>assert.fail('no install'),log(){}});
-  assert.equal(runtime,existing);
+  assert.deepEqual(runtime,{...existing,version:'0.2.0-rc.2'});
 });

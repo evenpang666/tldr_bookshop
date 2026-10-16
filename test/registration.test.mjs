@@ -20,7 +20,7 @@ for(const fail of [false,true])test(`official local bundle registration preserve
   if(args.includes('--version'))return{stdout:'12.3.4\n'};
   installs++;assert.deepEqual(args,['installed-dsh.js','plugin','--profile','web','add',`link:${root}`]);assert.equal(env.PNPM_CONFIG_STORE_DIR,'/existing/shared-store');assert.equal(env.npm_config_store_dir,'/existing/shared-store');
   assert.doesNotMatch(await readFile(patch,'utf8'),/insert:/);if(fail)throw Error('offline failure');
-  await symlink(root,join(profile,'node_modules/thinbook'),'dir');await writeFile(join(profile,'package.json'),JSON.stringify({dependencies:{other:'link:/other',thinbook:`link:${root}`},dsh:{profile:{bundles:['other','thinbook']}}}));return{stdout:''};
+  await symlink(root,join(profile,'node_modules/thinbook'),'junction');await writeFile(join(profile,'package.json'),JSON.stringify({dependencies:{other:'link:/other',thinbook:`link:${root}`},dsh:{profile:{bundles:['other','thinbook']}}}));return{stdout:''};
  }};
  try{
   if(fail){await assert.rejects(registerThinbook(options),/offline failure/);assert.equal(await readFile(patch,'utf8'),legacy);}

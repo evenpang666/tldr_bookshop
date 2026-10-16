@@ -13,7 +13,7 @@ const {PluginManager}=await import(pathToFileURL(require.resolve('@deepseek-ai/d
 test('DSH installed plugins show ThinBook once with Chinese title, icon and a manageable bundle',async()=>{
  const home=await mkdtemp(join(tmpdir(),'thinbook-list-')),dir=join(home,'profiles/web'),ctx=new Context();
  try{
-  await mkdir(join(dir,'node_modules'),{recursive:true});await symlink(root,join(dir,'node_modules/thinbook'),'dir');
+  await mkdir(join(dir,'node_modules'),{recursive:true});await symlink(root,join(dir,'node_modules/thinbook'),process.platform==='win32'?'junction':'dir');
   const manifest={private:true,dsh:{profile:{bundles:[]}}};await writeFile(join(dir,'package.json'),JSON.stringify(manifest));
   await writeFile(join(dir,'cordis.patch.yml'),'- insert:\n    - id: thinbook\n      name: file:///old/plugin/index.mjs\n');
   ctx.provide('loader',{entries:()=>[]});ctx.provide('profileContext',{name:'web',dir,installAnchor:anchor,startedBundles:[]});await ctx.plugin(PluginManager);

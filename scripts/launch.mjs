@@ -61,6 +61,8 @@ export async function main({ open = process.argv.includes('--open'), detect = ru
   const preferred = Number(process.env.DSH_WEB_PORT || (process.env.DSH_WEB_URL ? new URL(process.env.DSH_WEB_URL).port || 80 : 3080));
   if (!Number.isInteger(preferred) || preferred < 1 || preferred > 65535) throw new Error('DSH_WEB_PORT 必须为 1–65535。');
   const home = dshHome(), dataRoot = process.env.THINBOOK_DATA_DIR || root;
+  // Check even when an already-running ThinBook could be reused immediately.
+  const runtime = await ensure();
   const statePath = join(dataRoot, '.local', 'launcher.json');
   const reuse = async () => {
     const record = await registeredThinbook(home, readHealth);
@@ -71,7 +73,7 @@ export async function main({ open = process.argv.includes('--open'), detect = ru
     return true;
   };
   if (await thinbookInstalled(home, root)) {
-    await registerThinbook({ home, root });
+    await registerThinbook({ home, root, runtime });
     if (await reuse()) return;
   }
   let release = await startupLock(home);
@@ -80,8 +82,6 @@ export async function main({ open = process.argv.includes('--open'), detect = ru
     if (await thinbookInstalled(home, root) && await reuse()) return;
     const processes = await detect({ home });
     const profile = join(home, 'profiles/web');
-    let runtime;
-    if (!processes.length || !await thinbookInstalled(home, root)) runtime = await ensure();
     if (!processes.length) {
       await execute(runtime.command, [...runtime.args, '--profile', 'web', '--dump-default-config'], { env: process.env, timeout: 15000, windowsHide: true });
     }
