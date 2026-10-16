@@ -24,6 +24,11 @@ export function validateInput(input) {
   return { book: { id: String(book.id || '').slice(0, 200), title: book.title.trim(), author: book.author.trim(), description: String(book.description || '').slice(0, 500), category: String(book.category || '自选书籍').slice(0, 40), color: Number(book.color) || 0 }, model, minutes, sourceText, sourceComplete: Boolean(input.sourceComplete) };
 }
 function json(res, status, body) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); }
+// Keep imported source text on disk for regeneration, out of browser history/API responses.
+function publicReading(reading) {
+  const { generationInput, ...result } = reading;
+  return { ...result, canRegenerate: Boolean(generationInput && reading.cacheId) || reading.basis === '资料提炼' };
+}
 async function body(req) {
   let length = 0; const parts = [];
   for await (const part of req) { length += part.length; if (length > 3_000_000) throw new Error('内容过大，请缩短原文。'); parts.push(part); }
@@ -70,7 +75,7 @@ export function createApp({ generate = async () => { throw new Error('请通过 
         return json(res, 200, { books, categories, token, version: '2.0.0', settings: { hasKey: Boolean(config.hasKey), model: config.model, provider: config.provider, managed: true, admin: false }, lanUrls: lanUrls(independent?.port || webServer?.port || port, addresses).map(url => url + (independent?.port ? '/' : basePath ? basePath + '/' : '')), readings: await storage.listReadings() });
       }
       if (req.method === 'GET' && url.pathname === '/api/readings') return json(res, 200, { readings: await storage.listReadings() });
-      if (req.method === 'GET' && url.pathname.startsWith('/api/readings/')) { const reading = await storage.getReading(url.pathname.split('/').pop()); return json(res, reading ? 200 : 404, reading ? { reading: { ...reading, cached: true, chargedThisRequest: false } } : { error: '本地缓存不存在。' }); }
+      if (req.method === 'GET' && url.pathname.startsWith('/api/readings/')) { const reading = await storage.getReading(url.pathname.split('/').pop()); return json(res, reading ? 200 : 404, reading ? { reading: publicReading({ ...reading, cached: true, chargedThisRequest: false }) } : { error: '本地缓存不存在。' }); }
       if (req.method === 'GET' && url.pathname === '/api/search') {
         const q = (url.searchParams.get('q') || '').trim().slice(0, 200);
         if (!q) return json(res, 400, { error: '请输入书名或作者。' });
@@ -89,14 +94,23 @@ export function createApp({ generate = async () => { throw new Error('请通过 
         if (url.pathname === '/api/generate') {
           const config = await settings.getConfig();
           const request = await body(req);
-          const input = { ...validateInput({ ...request, model: config.model }), provider: config.provider || 'deepseek-official', reasoningEffort: config.reasoningEffort };
+          let replacement;
+          if (request.replaceCacheId !== undefined) {
+            if (request.force !== true || typeof request.replaceCacheId !== 'string' || !/^[a-f0-9]{64}$/.test(request.replaceCacheId)) return json(res, 400, { error: '重新读薄的缓存编号无效。' });
+            replacement = await storage.getReading(request.replaceCacheId);
+            if (!replacement) return json(res, 404, { error: '原阅读已不存在，请刷新最近阅读。' });
+            if (!replacement.generationInput && replacement.basis !== '资料提炼' && !request.sourceText?.trim()) return json(res, 400, { code: 'SOURCE_REQUIRED', error: '这篇旧阅读未保存原文，请重新导入原文后读薄。' });
+          }
+          const originalInput = replacement ? { book: replacement.book, minutes: replacement.minutes, ...(replacement.generationInput || {}), ...(request.sourceText ? { sourceText: request.sourceText, sourceComplete: request.sourceComplete } : {}) } : request;
+          const input = { ...validateInput({ ...originalInput, model: config.model }), provider: config.provider || 'deepseek-official', reasoningEffort: config.reasoningEffort };
           const skill = await readFile(join(root, '.dsh/skills/thin-book/SKILL.md'), 'utf8');
           const cacheId = storage.cacheKey({ ...input, skillHash: createHash('sha256').update(skill).digest('hex') });
-          if (!request.force) { const cached = await storage.getReading(cacheId); if (cached) { res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end(JSON.stringify({ type: 'result', reading: { ...cached, cached: true, chargedThisRequest: false } }) + '\n'); } }
+          if (!request.force) { const cached = await storage.getReading(cacheId); if (cached) { res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end(JSON.stringify({ type: 'result', reading: publicReading({ ...cached, cached: true, chargedThisRequest: false }) }) + '\n'); } }
           if (!config.hasKey) return json(res, 400, { error: '请先在 DSH 中配置 DeepSeek API Key，并选择 DeepSeek 官方默认模型，再刷新薄书。' });
-          if (pendingReadings.has(cacheId)) return json(res, 409, { error: '这本书的相同版本正在提炼，请完成后从最近阅读打开，避免重复计费。' });
+          const lockIds = [...new Set([cacheId, ...(replacement ? [request.replaceCacheId] : [])])];
+          if (lockIds.some(id => pendingReadings.has(id))) return json(res, 409, { error: '这本书的相同版本正在提炼，请完成后从最近阅读打开，避免重复计费。' });
           if (active >= 2) return json(res, 429, { error: '当前有两本书正在提炼，请等待完成后再试。' });
-          active++; pendingReadings.add(cacheId);
+          active++; lockIds.forEach(id => pendingReadings.add(id));
           res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
           const controller = new AbortController();
           let settled; const done = new Promise(resolve => { settled = resolve; });
@@ -107,9 +121,16 @@ export function createApp({ generate = async () => { throw new Error('请通过 
           try {
             send('status', { message: '正在启动阅读智能体…' });
             const reading = await generate({ ...input, signal: controller.signal, onStatus: message => send('status', { message }) });
-            let saved = { ...reading, cached: false, chargedThisRequest: true };
-            try { saved = await storage.saveReading(cacheId, saved); } catch { saved.cacheWarning = '正文已生成，但本地磁盘缓存写入失败。请立即导出保存。'; }
-            send('result', { reading: saved });
+            controller.signal.throwIfAborted();
+            let saved = { ...reading, generationInput: { sourceText: input.sourceText, sourceComplete: input.sourceComplete }, cached: false, chargedThisRequest: true };
+            try { saved = await storage.saveReading(cacheId, saved); } catch {
+              if (replacement) { send('error', { message: '重新读薄未能保存，原内容已保留。请检查磁盘空间后重试。' }); return; }
+              saved.cacheWarning = '正文已生成，但本地磁盘缓存写入失败。请立即导出保存。';
+            }
+            if (replacement && request.replaceCacheId !== cacheId) {
+              try { await storage.removeReading(request.replaceCacheId); } catch { saved.cacheWarning = '新内容已保存，但旧版本未能清理，请检查本地缓存目录权限。'; }
+            }
+            send('result', { reading: publicReading(saved) });
           } catch (error) {
             let message = String(error.message || '提炼失败。');
             // Never expose arbitrary runtime diagnostics or credential-bearing errors.
@@ -121,7 +142,7 @@ export function createApp({ generate = async () => { throw new Error('请通过 
             else if (!/^(模型未返回|资料不足|这次提炼|未能核实|DSH 未完成|DSH 没有返回|提炼超过|检索次数)/.test(message)) message = '提炼失败，请检查 DSH 配置或补充原文后重试。';
             message = message.slice(0, 700);
             send('error', { message });
-          } finally { controllers.delete(controller); settled(); active--; pendingReadings.delete(cacheId); clearInterval(heartbeat); res.off('close', abort); res.end(); }
+          } finally { controllers.delete(controller); settled(); active--; lockIds.forEach(id => pendingReadings.delete(id)); clearInterval(heartbeat); res.off('close', abort); res.end(); }
           return;
         }
         return json(res, 404, { error: '接口不存在。' });

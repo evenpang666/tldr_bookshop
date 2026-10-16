@@ -5,3 +5,6 @@
 .book-card .card-save{top:8px;right:7px;bottom:auto;margin:0;width:27px;height:27px;border-radius:50%;background:#151b12a6;color:#d3dfc2;padding:0;font-size:15px}.book-card .card-save.saved{color:#dfedca}
 .brand-logo{width:43px;height:43px;border-radius:11px;flex-shrink:0}
 .series-link{font-size:11px;line-height:1.8;text-align:left;color:#b5c99f;border-bottom:1px solid #435238;padding:3px 0;overflow-wrap:anywhere}
+
+.reading-notes{border-top:1px solid #35412b;padding:25px 0;color:#8ca279;font:12px/1.9 var(--sans);overflow-wrap:anywhere}.reading-notes>span{color:#b8cba5;font-size:11px}.reading-notes p{margin:12px 0 0;white-space:pre-wrap}
+@media(max-width:540px){.reader-toolbar{padding:0 12px;gap:10px}.reader-actions{gap:10px}.reader-actions #regenerate-reading{font-size:10px}}

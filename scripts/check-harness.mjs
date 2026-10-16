@@ -49,6 +49,7 @@ export async function checkHarness({ transport = false } = {}) {
       assert.equal(events.at(-1).type, 'result', JSON.stringify(events) + '\n' + output.slice(-6000).replace(/\?token=[^\s]+/g, '?token=[redacted]'));
       assert.match(events.at(-1).reading.body, /会话创建/);
       assert.equal(events.at(-1).reading.provider, 'deepseek-official');
+      if (!transport) assert.equal(events.at(-1).reading.notes, '离线书籍附注，仅用于验证与正文分开传递。');
     }
     const cached = await hostFetch(`${url}/api/generate`, { method: 'POST', headers, body: JSON.stringify({ book: bootstrap.books[0], minutes: 5, sourceText: '离线测试原文' }) });
     assert.equal(JSON.parse((await cached.text()).trim()).reading.cached, true);

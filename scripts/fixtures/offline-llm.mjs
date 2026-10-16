@@ -11,6 +11,7 @@ export function apply(ctx) {
     const text = JSON.stringify({
       title: '离线运行时验证', author: '测试数据', basis: '节选缩写',
       body: '这段文字仅用于验证本地阅读智能体的会话创建、提示组装和结果返回，不代表真实书籍内容。'.repeat(5),
+      notes: '离线书籍附注，仅用于验证与正文分开传递。',
       coverage: '离线模拟模型输出，不访问任何外部 API。', sources: [],
     });
     yield { type: 'block-start', index: 0, blockType: 'text' };

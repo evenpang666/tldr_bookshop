@@ -27,6 +27,19 @@ test('reading requires evidence and cannot claim original text without upload', 
   assert.throws(() => parseReading('truncated JSON', books[0]));
   assert.throws(() => parseReading(JSON.stringify({ body: '', coverage: '缺少可靠来源' }), books[0]), /资料不足/);
 });
+test('reading keeps book commentary separate and accepts older outputs without notes', () => {
+  const body = '我走到渡口，雨停了，岸边只剩下一盏灯。'.repeat(10);
+  const notes = '这本书采用第一人称叙述。';
+  const answer = { body, notes: `\n${notes}\n`, coverage: '仅覆盖所给节选。' };
+  const result = parseReading(JSON.stringify(answer), books[0], true);
+  assert.equal(result.body, body);
+  assert.equal(result.notes, notes);
+  assert.equal(result.coverage, answer.coverage);
+  for (const legacyNotes of [undefined, null, ['背景'], { text: '背景' }]) {
+    assert.equal(parseReading(JSON.stringify({ ...answer, notes: legacyNotes }), books[0], true).notes, '');
+  }
+  assert.throws(() => parseReading(JSON.stringify({ body: '', notes: notes.repeat(100) }), books[0], true), /资料不足/);
+});
 test('only sources present in successful Harness web results survive verification', () => {
   const reading = { sources: [{ title: 'A', url: 'https://a.example/' }, { title: 'B', url: 'https://b.example/' }, { title: 'invented', url: 'https://invented.example/' }] };
   const events = [

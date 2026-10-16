@@ -68,7 +68,8 @@ function toggleSave(book) {
 }
 function updateSaveButton() { $('#save-book').textContent = isSaved(state.selected) ? '✓ 已在书架' : '＋ 加入书架'; }
 function openBook(book) {
-  state.selected = book; state.minutes = 10;
+  state.selected = book; state.minutes = 10; state.replaceReading = null;
+  $('#read-book').textContent = '把这本书读薄 ↗';
   $('#detail-title').textContent = book.title; $('#detail-author').textContent = book.author;
   $('#detail-category').textContent = book.category; $('#detail-cover').innerHTML = cover(book);
   $('#detail-description').textContent = book.description || '自选书籍将在提炼时核对作者与内容。';
@@ -84,7 +85,7 @@ function openBook(book) {
     $('#library').scrollIntoView({ behavior: 'smooth' });
   } : null;
   $('#source-text').value = ''; $('#source-file').value = ''; $('#source-complete').checked = false;
-  $$('#length-options button').forEach(b => b.classList.toggle('selected', b.dataset.minutes === '10'));
+  $$('#length-options button').forEach(b => { b.disabled = false; b.classList.toggle('selected', b.dataset.minutes === '10'); });
   updateSaveButton(); showDialog('#book-dialog');
 }
 $$('[data-view]').forEach(button => button.addEventListener('click', () => {
@@ -136,32 +137,62 @@ $('#custom-form').addEventListener('submit', event => { event.preventDefault(); 
 $('#length-options').addEventListener('click', event => { const button = event.target.closest('[data-minutes]'); if (!button) return; state.minutes = Number(button.dataset.minutes); $$('#length-options button').forEach(b => b.classList.toggle('selected', b === button)); });
 $('#source-file').addEventListener('change', async event => { const file = event.target.files[0]; if (!file) return; if (file.size > 2400000) { toast('文件过大，请截取部分原文。'); event.target.value = ''; return; } const text = await file.text(); if (text.length > 600000) { toast('原文超过 60 万字，请分段导入。'); return; } $('#source-text').value = text; toast(`已导入 ${text.length.toLocaleString()} 字`); });
 $('#save-book').addEventListener('click', () => toggleSave(state.selected));
-$('#read-book').addEventListener('click', startReading);
+$('#read-book').addEventListener('click', () => startReading());
+$('#regenerate-reading').addEventListener('click', regenerateReading);
 function requestHeaders() { return { 'Content-Type': 'application/json', 'X-Thinbook-Token': state.token }; }
-function setReaderMode(mode) { $('#reader').hidden = false; document.body.style.overflow = 'hidden'; $('#reader-loading').hidden = mode !== 'loading'; $('#reader-article').hidden = mode !== 'article'; $('#reader-error').hidden = mode !== 'error'; $('#export-reading').disabled = mode !== 'article'; $('#reader').scrollTop = 0; $('#reading-progress').style.width = '0'; }
+function setReaderMode(mode) { $('#reader').hidden = false; document.body.style.overflow = 'hidden'; $('#reader-loading').hidden = mode !== 'loading'; $('#reader-article').hidden = mode !== 'article'; $('#reader-error').hidden = mode !== 'error'; $('#export-reading').disabled = mode !== 'article'; $('#regenerate-reading').disabled = mode !== 'article'; $('#reader').scrollTop = 0; $('#reading-progress').style.width = '0'; }
 async function startReading() {
   if (state.running) return;
+  if (state.replaceReading) {
+    if (!$('#source-text').value.trim()) { toast('请先重新导入原文。'); return; }
+    const previous = state.replaceReading;
+    $('#book-dialog').close();
+    return runReading({ book: previous.book, minutes: previous.minutes, sourceText: $('#source-text').value.trim(), sourceComplete: $('#source-complete').checked, force: true, ...(previous.cacheId ? { replaceCacheId: previous.cacheId } : {}) }, previous);
+  }
   if (!state.hasKey && !state.history.some(r => r.book.title === state.selected.title && r.book.author === state.selected.author && r.minutes === state.minutes && r.cacheId)) { pendingBook = true; $('#book-dialog').close(); openSettings(); toast('请先在 DSH 中配置 Key，然后刷新配置。'); return; }
+  const input = { book: state.selected, minutes: state.minutes, sourceText: $('#source-text').value.trim(), sourceComplete: $('#source-complete').checked };
+  $('#book-dialog').close();
+  return runReading(input);
+}
+function requestOriginal(reading) {
+  openBook(reading.book || { title: reading.title, author: reading.author });
+  state.minutes = reading.minutes || 10; state.replaceReading = { ...reading, book: state.selected, minutes: state.minutes };
+  $('#read-book').textContent = '重新读薄 ↻';
+  $('#source-complete').checked = reading.basis === '原文缩写';
+  $('.source-input').open = true;
+  $$('#length-options button').forEach(b => { b.disabled = true; b.classList.toggle('selected', Number(b.dataset.minutes) === state.minutes); });
+  toast('这篇旧阅读未保存原文，请重新导入后读薄。');
+}
+async function regenerateReading() {
+  if (state.running || !state.reading) return;
+  const previous = state.reading;
+  if (!previous.canRegenerate && previous.basis !== '资料提炼') { requestOriginal(previous); return; }
+  return runReading({ book: previous.book || { title: previous.title, author: previous.author }, minutes: previous.minutes || 10, force: true, ...(previous.cacheId ? { replaceCacheId: previous.cacheId } : {}) }, previous);
+}
+async function runReading(input, previous = null) {
+  if (state.running) return;
   const thisGeneration = ++generationId;
-  const book = state.selected, minutes = state.minutes, sourceText = $('#source-text').value.trim(), sourceComplete = $('#source-complete').checked;
-  $('#book-dialog').close(); state.running = true; state.abort = new AbortController(); state.reading = null;
-  setReaderMode('loading'); $('#loading-stage').textContent = '正在连接 DeepSeek Harness…'; $('#activity').textContent = `${book.title} · 约 ${minutes} 分钟阅读`;
+  state.running = true; state.abort = new AbortController(); state.reading = previous;
+  setReaderMode('loading'); $('#loading-stage').textContent = previous ? '正在重新读薄…' : '正在连接 DeepSeek Harness…'; $('#activity').textContent = `${input.book.title} · 约 ${input.minutes} 分钟阅读`;
   let received = false;
   try {
-    const response = await appFetch('/api/generate', { method: 'POST', headers: requestHeaders(), body: JSON.stringify({ book, minutes, sourceText, sourceComplete }), signal: state.abort.signal });
-    if (!response.ok) { const data = await response.json(); throw new Error(data.error || '请求失败。'); }
+    const response = await appFetch('/api/generate', { method: 'POST', headers: requestHeaders(), body: JSON.stringify(input), signal: state.abort.signal });
+    if (!response.ok) { const data = await response.json(); if (data.code === 'SOURCE_REQUIRED' && previous && thisGeneration === generationId) { await openReading(previous); requestOriginal(previous); return; } throw new Error(data.error || '请求失败。'); }
     const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = '';
     const handleLine = line => {
       if (!line.trim() || thisGeneration !== generationId) return; const event = JSON.parse(line);
       if (event.type === 'status') $('#loading-stage').textContent = event.message;
       if (event.type === 'error') throw new Error(event.message);
-      if (event.type === 'result') { received = true; openReading({ ...event.reading, progress: 0 }); saveReading(state.reading); if (event.reading.cacheWarning) toast(event.reading.cacheWarning); }
+      if (event.type === 'result') { received = true; openReading({ ...event.reading, progress: 0 }); saveReading(state.reading, previous); state.replaceReading = null; if (event.reading.cacheWarning) toast(event.reading.cacheWarning); else if (previous) toast('已重新读薄并覆盖原内容。'); }
     };
     while (true) { const { done, value } = await reader.read(); if (done) { buffer += decoder.decode(); break; } buffer += decoder.decode(value, { stream: true }); const lines = buffer.split('\n'); buffer = lines.pop(); for (const line of lines) handleLine(line); }
     if (buffer.trim()) handleLine(buffer);
     if (!received) throw new Error('连接中断，正文尚未完成，请重试。');
   } catch (error) {
-    if (error.name !== 'AbortError' && thisGeneration === generationId) { setReaderMode('error'); $('#error-message').textContent = error.message || '连接失败，请重试。'; }
+    if (error.name !== 'AbortError' && thisGeneration === generationId && !received) {
+      if (previous) { await openReading(previous); toast(`${error.message || '重新读薄失败。'} 原内容已保留。`); }
+      else { setReaderMode('error'); $('#error-message').textContent = error.message || '连接失败，请重试。'; }
+    }
   } finally { if (thisGeneration === generationId) { state.running = false; state.abort = null; } }
 }
 function safeUrl(value) { try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) ? url.href : null; } catch { return null; } }
@@ -194,17 +225,21 @@ async function openReading(reading) {
   const chargeText = reading.cached ? '本次读取本地缓存 · API 费用 US$0 · ' : reading.cacheWarning ? '' : '已缓存至项目本地 · ';
   $('#reader-meta').innerHTML += `<small class="reading-cost" title="${escapeHTML(cost?.note || '')}">${chargeText}${costText}</small>`;
   $('#reader-body').innerHTML = markdown(reading.body); $('#reader-coverage').textContent = reading.coverage;
+  const notes = typeof reading.notes === 'string' ? reading.notes.trim() : '';
+  $('#reader-notes-text').textContent = notes; $('#reader-notes').hidden = !notes;
   $('#sources-list').innerHTML = (reading.sources || []).filter(s => safeUrl(s.url)).map(s => `<li><a href="${escapeHTML(safeUrl(s.url))}" target="_blank" rel="noopener noreferrer">${escapeHTML(s.title)} ↗</a></li>`).join('');
   $('#reader-sources').hidden = !$('#sources-list').children.length;
   $('#reader-body').style.setProperty('--reading-font', `${state.font}px`);
-  requestAnimationFrame(() => { const node = $('#reader'); node.scrollTop = (node.scrollHeight - node.clientHeight) * (reading.progress || 0); });
+  const progress = reading.progress || 0;
+  requestAnimationFrame(() => { const node = $('#reader'); node.scrollTop = (node.scrollHeight - node.clientHeight) * progress; });
 }
-function saveReading(reading) {
-  state.history = [reading, ...state.history.filter(r => !(r.book.id === reading.book.id && r.minutes === reading.minutes))].slice(0, 20);
+function saveReading(reading, previous = null) {
+  state.history = [reading, ...state.history.filter(r => !(previous?.cacheId && r.cacheId === previous.cacheId) && !(r.book.title === reading.book.title && r.book.author === reading.book.author && r.minutes === reading.minutes))].slice(0, 20);
   store.write('history', state.history); render();
 }
 let progressTimer;
 $('#reader').addEventListener('scroll', () => {
+  if (state.running || $('#reader').hidden || $('#reader-article').hidden) return;
   const node = $('#reader'), progress = node.scrollTop / Math.max(1, node.scrollHeight - node.clientHeight);
   $('#reading-progress').style.width = `${Math.min(progress * 100, 100)}%`;
   if (!state.reading) return; state.reading.progress = progress;
@@ -218,7 +253,9 @@ function changeFont(amount) { state.font = Math.max(14, Math.min(26, state.font 
 $('#font-down').addEventListener('click', () => changeFont(-1)); $('#font-up').addEventListener('click', () => changeFont(1));
 $('#export-reading').addEventListener('click', () => {
   const r = state.reading; if (!r) return;
-  const text = `# ${r.title}\n\n${r.author} · ${r.basis}\n\n${r.body}\n\n---\n\n${r.coverage}\n\n${(r.sources || []).map(s => `- ${s.title}: ${s.url}`).join('\n')}\n`;
+  const notes = typeof r.notes === 'string' ? r.notes.trim() : '';
+  const notesText = notes ? `## 书籍附注\n\n<small>${escapeHTML(notes).replace(/\r?\n/g, '<br>')}</small>\n\n` : '';
+  const text = `# ${r.title}\n\n${r.author} · ${r.basis}\n\n${r.body}\n\n---\n\n${notesText}${r.coverage}\n\n${(r.sources || []).map(s => `- ${s.title}: ${s.url}`).join('\n')}\n`;
   const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' })); const a = document.createElement('a'); a.href = url; a.download = `${r.title.replace(/[\\/:*?"<>|]/g, '_')}-薄书.md`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
 document.addEventListener('keydown', event => { if (event.key === '/' && !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName) && !$$('dialog').some(d => d.open) && $('#reader').hidden) { event.preventDefault(); $('#search-input').focus(); } if (event.key === 'Escape' && !$('#reader').hidden) leaveReader(); });
