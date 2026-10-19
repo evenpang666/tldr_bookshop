@@ -44,8 +44,8 @@
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/assets/detail.png" alt="书籍详情：选择阅读时长与导入原文"></td>
-    <td width="50%"><img src="docs/assets/reading.png" alt="阅读界面：正文、进度与导出"></td>
+    <td width="50%"><img src="docs/assets/detail_1.png" alt="书籍详情：选择阅读时长与导入原文"></td>
+    <td width="50%"><img src="docs/assets/reading_1.png" alt="阅读界面：正文、进度与导出"></td>
   </tr>
   <tr>
     <td align="center">留一点时间，读薄一本书</td>
